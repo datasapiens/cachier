@@ -4,8 +4,8 @@ Cachier is a Go library that provides an interfaces for dealing with cache.
 There is an CacheEngine interface which requires you to implement common cache
 methods (like Get, Set, Delete, etc). When implemented, you wrap this
 CacheEngine into the Cache struct and you'll get GetOrCompute method in return.
-This method is a shortcut which fetching a value from cache. If the value
-is not found, it is evaluated and stored in the cache.
+This method is a shortcut for fetching a value from cache. If the value
+is not found, it is evaluated and stored back in the cache.
 
 There are also three implementations included:
 
