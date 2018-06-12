@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/datasapiens/cachier.svg?branch=master)](https://travis-ci.org/datasapiens/cachier)
+
 # Cachier
 
 Cachier is a Go library that provides an interfaces for dealing with cache.
