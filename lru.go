@@ -1,6 +1,8 @@
 package cachier
 
-import lru "github.com/hashicorp/golang-lru"
+import (
+	"github.com/hashicorp/golang-lru"
+)
 
 // LRUCache is a wrapper of hashicorp's golang-lru cache which
 // implements cachier.Cache interface

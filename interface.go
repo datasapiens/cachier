@@ -1,7 +1,28 @@
+// # Cachier
+
+// Cachier is a Go library that provides an interface for dealing with cache.
+// There is a CacheEngine interface which requires you to implement common cache
+// methods (like Get, Set, Delete, etc). When implemented, you wrap this
+// CacheEngine into the Cache struct. This struct has some methods implemented
+// like GetOrCompute method (shortcut for fetching a hit or computing/writing
+// a miss).
+
+// There are also three implementations included:
+
+//  - LRUCache: a wrapper of hashicorp/golang-lru which fulfills the CacheEngine
+//    interface
+
+//  - RedisCache: CacheEngine based on redis
+
+//  - CacheWithSubcache: Implementation of combination of primary cache with
+//    fast L1 subcache. E.g. primary Redis cache and fast (and small) LRU
+//    subcache. But any other implementations of CacheEngine can be used.
+
 package cachier
 
 import (
 	"errors"
+	"strings"
 	"sync"
 )
 
@@ -56,4 +77,20 @@ func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) 
 		return value, err
 	}
 	return nil, err
+}
+
+// DeleteWithPrefix removes all keys that start with given prefix
+func (c *Cache) DeleteWithPrefix(prefix string) error {
+	keys, err := c.Keys()
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if strings.HasPrefix(key, prefix) {
+			if err := c.Delete(key); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
