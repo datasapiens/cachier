@@ -22,6 +22,7 @@ package cachier
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -87,6 +88,28 @@ func (c *Cache) DeleteWithPrefix(prefix string) error {
 	}
 	for _, key := range keys {
 		if strings.HasPrefix(key, prefix) {
+			if err := c.Delete(key); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// DeleteRegExp deletes all keys matching the supplied regexp
+func (c *Cache) DeleteRegExp(pattern string) error {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return err
+	}
+
+	keys, err := c.Keys()
+	if err != nil {
+		return err
+	}
+
+	for _, key := range keys {
+		if re.MatchString(key) {
 			if err := c.Delete(key); err != nil {
 				return err
 			}
