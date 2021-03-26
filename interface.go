@@ -131,3 +131,25 @@ func (c *Cache) DeleteRegExp(pattern string) error {
 	}
 	return nil
 }
+
+// CountRecords counts all keys matching the supplied regexp
+func (c *Cache) CountKeys(pattern string) (int, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return 0, err
+	}
+
+	keys, err := c.Keys()
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+
+	for _, key := range keys {
+		if re.MatchString(key) {
+			count++
+		}
+	}
+	return count, nil
+}
