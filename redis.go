@@ -1,10 +1,11 @@
 package cachier
 
 import (
+	"context"
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 )
 
 // Logger is interface for logging
@@ -36,6 +37,8 @@ type RedisCache struct {
 	ttl         time.Duration
 	logger      Logger
 }
+
+var ctx = context.Background()
 
 // NewRedisCache is a constructor that creates a RedisCache
 func NewRedisCache(
@@ -77,7 +80,7 @@ func NewRedisCacheWithLogger(
 // Get gets a cached value by key
 func (rc *RedisCache) Get(key string) (interface{}, error) {
 	rc.logger.Print("redis get " + rc.keyPrefix + key)
-	value, err := rc.redisClient.Get(rc.keyPrefix + key).Result()
+	value, err := rc.redisClient.Get(ctx, rc.keyPrefix+key).Result()
 
 	if err == redis.Nil {
 		return nil, ErrNotFound
@@ -102,17 +105,17 @@ func (rc *RedisCache) Set(key string, value interface{}) error {
 		return err
 	}
 	rc.logger.Print("redis set " + rc.keyPrefix + key)
-	return rc.redisClient.Set(rc.keyPrefix+key, marshalledValue, rc.ttl).Err()
+	return rc.redisClient.Set(ctx, rc.keyPrefix+key, marshalledValue, rc.ttl).Err()
 }
 
 // Delete removes a key from cache
 func (rc *RedisCache) Delete(key string) error {
-	return rc.redisClient.Del(rc.keyPrefix + key).Err()
+	return rc.redisClient.Del(ctx, rc.keyPrefix+key).Err()
 }
 
 // Keys returns all the keys in the cache
 func (rc *RedisCache) Keys() ([]string, error) {
-	keys, err := rc.redisClient.Keys(rc.keyPrefix + "*").Result()
+	keys, err := rc.redisClient.Keys(ctx, rc.keyPrefix+"*").Result()
 	if err != nil {
 		return nil, err
 	}

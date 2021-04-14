@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 )
 
 func InitLRUCache() *Cache {
@@ -29,7 +29,7 @@ func InitRedis() (*redis.Client, error) {
 		DB:       0,
 	})
 
-	_, err := redisClient.Ping().Result()
+	_, err := redisClient.Ping(ctx).Result()
 
 	return redisClient, err
 }
