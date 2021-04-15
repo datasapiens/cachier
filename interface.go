@@ -42,6 +42,7 @@ type CacheEngine interface {
 	Purge() error
 }
 
+// CompressionProvider defines compression method
 type CompressionProvider interface {
 	Compress(src []byte) ([]byte, error)
 	Decompress(src []byte) ([]byte, error)
