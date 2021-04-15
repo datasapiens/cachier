@@ -47,6 +47,7 @@ func InitRedisCache() (*Cache, error) {
 			return json.Unmarshal(b, value)
 		},
 		0,
+		nil,
 	)
 
 	return MakeCache(rc), err
