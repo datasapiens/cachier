@@ -2,20 +2,34 @@ package cachier
 
 import (
 	"github.com/DataDog/zstd"
+	clz4 "github.com/bkaradzic/go-lz4"
 	"github.com/pierrec/lz4/v4"
 )
 
 const lz4UnknownFrameDescriptor = "Unknown frame descriptor"
 const lz4IncorrectSize = "Src size is incorrect"
+const minInputSizeForCompressionInBytes = 1024
 
 // NoCompressionService uses no compression
 var NoCompressionService *noCompression = &noCompression{}
 
 // ZstdCompressionService uses  lz4 method
-var ZstdCompressionService *zstdCompression = &zstdCompression{}
+var ZstdCompressionService *zstdCompression = &zstdCompression{
+	minInputSize: minInputSizeForCompressionInBytes,
+}
 
 // Lz4CompressionService uses  lz4 method
-var Lz4CompressionService *lz4Compression = &lz4Compression{}
+var Lz4CompressionService *lz4Compression = &lz4Compression{
+	minInputSize: minInputSizeForCompressionInBytes,
+}
+
+// DO NOT USE IT.
+// CLz4CompressionService uses  lz4 method ported from C
+// compression is 3 times slower than in pure golang implementation.
+// Trying to decompress regular data (not compressed one) causes inifinity loop
+var cLz4CompressionService *cLz4Compression = &cLz4Compression{
+	minInputSize: minInputSizeForCompressionInBytes,
+}
 
 type noCompression struct {
 }
@@ -31,10 +45,15 @@ func (c noCompression) Decompress(src []byte) ([]byte, error) {
 }
 
 type zstdCompression struct {
+	minInputSize int
 }
 
 // Compress compresses src  using zstd method
 func (zs zstdCompression) Compress(src []byte) ([]byte, error) {
+
+	if len(src) < zs.minInputSize {
+		return src, nil
+	}
 	output, err := zstd.Compress(nil, src)
 	if err != nil {
 		return nil, err
@@ -61,11 +80,16 @@ func (zs zstdCompression) Decompress(src []byte) ([]byte, error) {
 }
 
 type lz4Compression struct {
+	minInputSize int
 }
 
 // Compress compresses src  using lz4 method
 func (lz lz4Compression) Compress(src []byte) ([]byte, error) {
-	buf := make([]byte, 2*len(src))
+	if len(src) < lz.minInputSize {
+		return src, nil
+	}
+
+	buf := make([]byte, len(src))
 	var compressor lz4.Compressor
 	n, err := compressor.CompressBlock(src, buf)
 	if err != nil {
@@ -79,11 +103,11 @@ func (lz lz4Compression) Compress(src []byte) ([]byte, error) {
 
 // Decompress decompresses src  using lz4 method
 func (lz lz4Compression) Decompress(src []byte) ([]byte, error) {
-	buf := make([]byte, 10*len(src))
+	buf := make([]byte, 20*len(src))
 	n, err := lz4.UncompressBlock(src, buf)
 	if err != nil {
-		// Try to use bigger buffer
-		buf = make([]byte, 100*len(src))
+		// Try to use maxium required buffer size
+		buf = make([]byte, 255*len(src))
 		n, err = lz4.UncompressBlock(src, buf)
 		if err != nil {
 			return src, nil
@@ -92,3 +116,65 @@ func (lz lz4Compression) Decompress(src []byte) ([]byte, error) {
 
 	return buf[:n], nil
 }
+
+type cLz4Compression struct {
+	minInputSize int
+}
+
+// Compress compresses src  using lz4 method poreted from C
+func (clz cLz4Compression) Compress(src []byte) ([]byte, error) {
+	if len(src) < clz.minInputSize {
+		return src, nil
+	}
+	buf := make([]byte, len(src))
+	out, err := clz4.Encode(buf, src)
+	if err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}
+
+// Decompress decompresses src  using lz4 method
+func (clz cLz4Compression) Decompress(src []byte) ([]byte, error) {
+	buf := make([]byte, 10*len(src))
+	out, err := clz4.Decode(buf, src)
+	if err != nil {
+		return src, nil
+	}
+
+	return out, nil
+}
+
+// This commented out block contains other way to compress and decompress using
+// the github.com/pierrec/lz4 implementation. Hovewer the reasults are worse than using blocks
+// Compress compresses src  using lz4 method
+// func (lz lz4Compression) Compress(src []byte) ([]byte, error) {
+// 	var out bytes.Buffer
+// 	r := bytes.NewReader(src)
+// 	zw := lz4.NewWriter(&out)
+// 	_, err := io.Copy(zw, r)
+// 	if err != nil {
+// 		fmt.Println(err)
+// 		return nil, err
+// 	}
+// 	err = zw.Close()
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	return out.Bytes(), nil
+// }
+
+// // Decompress decompresses src  using lz4 method
+// func (lz lz4Compression) Decompress(src []byte) ([]byte, error) {
+// 	var out bytes.Buffer
+// 	r := bytes.NewReader(src)
+// 	zr := lz4.NewReader(r)
+// 	_, err := io.Copy(&out, zr)
+// 	if err != nil {
+// 		fmt.Println(err)
+// 		return nil, err
+// 	}
+
+// 	return out.Bytes(), nil
+// }
