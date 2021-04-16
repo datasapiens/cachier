@@ -108,8 +108,8 @@ func TestCLz4CompressionLongString(t *testing.T) {
 func TestLz4CompressionFile(t *testing.T) {
 	t.SkipNow()
 	files := []string{
-		"cache_samples/cache_wtf",
-		"cache_samples/cache_products",
+		"/home/marcin/Downloads/cache/cache_samples/cache_wtf",
+		"/home/marcin/Downloads/cache/cache_samples/cache_products",
 	}
 
 	for _, path := range files {
@@ -133,28 +133,29 @@ func TestLz4CompressionFile(t *testing.T) {
 }
 
 func TestCLz4CompressionFile(t *testing.T) {
-	t.SkipNow()
 	files := []string{
-		"cache_samples/cache_wtf",
-		"cache_products",
+		"/home/marcin/Downloads/cache/cache_samples/cache_wtf",
+		"/home/marcin/Downloads/cache/cache_samples/cache_products",
 	}
 
 	for _, path := range files {
 		buf, err := ioutil.ReadFile(path)
-		require.Nil(t, err)
-		start := time.Now()
-		compressedOutput, err := cLz4CompressionService.Compress(buf)
-		elapsed := time.Since(start)
-		require.Nil(t, err)
-		t.Logf(" Orginal size %v\n", len(buf))
-		t.Logf("Compression took %s\n", elapsed)
-		t.Logf("Size %v", len(compressedOutput))
-		start = time.Now()
-		decompressedOutput, err := cLz4CompressionService.Decompress(compressedOutput)
-		elapsed = time.Since(start)
-		require.Nil(t, err)
-		t.Logf("DeCompression took %s\n", elapsed)
-		t.Logf("Size %v", len(decompressedOutput))
+		for a := 0; a < 3; a++ {
+			require.Nil(t, err)
+			start := time.Now()
+			compressedOutput, err := cLz4CompressionService.Compress(buf)
+			elapsed := time.Since(start)
+			require.Nil(t, err)
+			t.Logf(" Orginal size %v\n", len(buf))
+			t.Logf("Compression took %s\n", elapsed)
+			t.Logf("Compressed size %v", len(compressedOutput))
+			start = time.Now()
+			decompressedOutput, err := cLz4CompressionService.Decompress(compressedOutput)
+			elapsed = time.Since(start)
+			require.Nil(t, err)
+			t.Logf("DeCompression took %s\n", elapsed)
+			t.Logf("Decmopressed size %v", len(decompressedOutput))
+		}
 	}
 
 }

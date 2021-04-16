@@ -2,7 +2,7 @@ package cachier
 
 import (
 	"github.com/DataDog/zstd"
-	clz4 "github.com/bkaradzic/go-lz4"
+	clz4 "github.com/cloudflare/golz4"
 	"github.com/pierrec/lz4/v4"
 )
 
@@ -13,7 +13,7 @@ const minInputSizeForCompressionInBytes = 1024
 // NoCompressionService uses no compression
 var NoCompressionService *noCompression = &noCompression{}
 
-// ZstdCompressionService uses  lz4 method
+// ZstdCompressionServic	github.com/bkaradzic/go-lz4 v1.0.0e uses  lz4 method
 var ZstdCompressionService *zstdCompression = &zstdCompression{
 	minInputSize: minInputSizeForCompressionInBytes,
 }
@@ -126,24 +126,27 @@ func (clz cLz4Compression) Compress(src []byte) ([]byte, error) {
 	if len(src) < clz.minInputSize {
 		return src, nil
 	}
-	buf := make([]byte, len(src))
-	out, err := clz4.Encode(buf, src)
+
+	output := make([]byte, clz4.CompressBound(src))
+	outSize, err := clz4.Compress(src, output)
 	if err != nil {
 		return nil, err
 	}
-
-	return out, nil
+	if outSize >= len(src) {
+		return src, nil
+	}
+	return output, nil
 }
 
 // Decompress decompresses src  using lz4 method
 func (clz cLz4Compression) Decompress(src []byte) ([]byte, error) {
-	buf := make([]byte, 10*len(src))
-	out, err := clz4.Decode(buf, src)
+	output := make([]byte, 20*len(src))
+	err := clz4.Uncompress(src, output)
 	if err != nil {
 		return src, nil
 	}
 
-	return out, nil
+	return output, nil
 }
 
 // This commented out block contains other way to compress and decompress using
