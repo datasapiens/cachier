@@ -45,7 +45,7 @@ func (c noCompression) Compress(src []byte) ([]byte, error) {
 
 // Decompress returns src without any changes.
 func (c noCompression) Decompress(src []byte) ([]byte, error) {
-	return src[:len(src)-methodIDLengthInByte], nil
+	return src[:len(src)-providerIDLengthInByte], nil
 }
 
 // GetID returns compression identifier.
@@ -207,6 +207,6 @@ func extractMetadata(input []byte) ([]byte, int, error) {
 		return nil, 0, ErrMissingMetadata
 	}
 	output := input[:len(input)-metadataSizeInByte]
-	dstSize := byteOrder.Uint64(input[len(input)-metadataSizeInByte : len(input)-methodIDLengthInByte])
+	dstSize := byteOrder.Uint64(input[len(input)-metadataSizeInByte : len(input)-providerIDLengthInByte])
 	return output, int(dstSize), nil
 }

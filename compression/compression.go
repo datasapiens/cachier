@@ -6,9 +6,9 @@ import (
 	"sync"
 )
 
-const methodIDLengthInByte = 1
+const providerIDLengthInByte = 1
 const originalSizeLengthInByte = 8
-const metadataSizeInByte = methodIDLengthInByte + originalSizeLengthInByte
+const metadataSizeInByte = providerIDLengthInByte + originalSizeLengthInByte
 const notCompressedBufferSize = 1024
 
 var byteOrder = binary.LittleEndian
@@ -113,7 +113,7 @@ func (ce *Engine) CompressWithProvider(input []byte, providerID byte) ([]byte, e
 // Decompress extracts from input the information about used compression method.
 // If compression provider is found - the data are decompressed
 func (ce *Engine) Decompress(input []byte) ([]byte, error) {
-	providerID := input[len(input)-methodIDLengthInByte]
+	providerID := input[len(input)-providerIDLengthInByte]
 	ce.mutex.RLock()
 	provider, ok := ce.providers[providerID]
 	if !ok {
