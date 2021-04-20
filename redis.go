@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datasapiens/cachier/compression"
 	"github.com/go-redis/redis/v8"
 )
 
@@ -30,13 +31,13 @@ func (d DummyLogger) Print(...interface{}) {}
 //
 // RedisCache implements cachier.CacheTTL interface using redis storage
 type RedisCache struct {
-	redisClient         *redis.Client
-	keyPrefix           string
-	marshal             func(value interface{}) ([]byte, error)
-	unmarshal           func(b []byte, value *interface{}) error
-	ttl                 time.Duration
-	logger              Logger
-	compressionProvider CompressionProvider
+	redisClient       *redis.Client
+	keyPrefix         string
+	marshal           func(value interface{}) ([]byte, error)
+	unmarshal         func(b []byte, value *interface{}) error
+	ttl               time.Duration
+	logger            Logger
+	compressionEngine *compression.Engine
 }
 
 var ctx = context.Background()
@@ -48,19 +49,16 @@ func NewRedisCache(
 	marshal func(value interface{}) ([]byte, error),
 	unmarshal func(b []byte, value *interface{}) error,
 	ttl time.Duration,
-	compressionProvider CompressionProvider,
+	compressionEngine *compression.Engine,
 ) *RedisCache {
-	if compressionProvider == nil {
-		compressionProvider = NoCompressionService
-	}
 	return &RedisCache{
-		redisClient:         redisClient,
-		keyPrefix:           keyPrefix,
-		marshal:             marshal,
-		unmarshal:           unmarshal,
-		ttl:                 ttl,
-		logger:              DummyLogger{},
-		compressionProvider: compressionProvider,
+		redisClient:       redisClient,
+		keyPrefix:         keyPrefix,
+		marshal:           marshal,
+		unmarshal:         unmarshal,
+		ttl:               ttl,
+		logger:            DummyLogger{},
+		compressionEngine: compressionEngine,
 	}
 }
 
@@ -72,19 +70,16 @@ func NewRedisCacheWithLogger(
 	unmarshal func(b []byte, value *interface{}) error,
 	ttl time.Duration,
 	logger Logger,
-	compressionProvider CompressionProvider,
+	compressionEngine *compression.Engine,
 ) *RedisCache {
-	if compressionProvider == nil {
-		compressionProvider = NoCompressionService
-	}
 	return &RedisCache{
-		redisClient:         redisClient,
-		keyPrefix:           keyPrefix,
-		marshal:             marshal,
-		unmarshal:           unmarshal,
-		ttl:                 ttl,
-		logger:              logger,
-		compressionProvider: compressionProvider,
+		redisClient:       redisClient,
+		keyPrefix:         keyPrefix,
+		marshal:           marshal,
+		unmarshal:         unmarshal,
+		ttl:               ttl,
+		logger:            logger,
+		compressionEngine: compressionEngine,
 	}
 }
 
@@ -99,12 +94,18 @@ func (rc *RedisCache) Get(key string) (interface{}, error) {
 		return nil, err
 	}
 
-	decompressedValue, err := rc.compressionProvider.Decompress([]byte(value))
-	if err != nil {
-		return nil, err
+	var input []byte
+	if rc.compressionEngine == nil {
+		input = []byte(value)
+	} else {
+		input, err = rc.compressionEngine.Decompress([]byte(value))
+		if err != nil {
+			return nil, err
+		}
 	}
+
 	var result interface{}
-	rc.unmarshal(decompressedValue, &result)
+	rc.unmarshal(input, &result)
 	return result, nil
 }
 
@@ -120,12 +121,18 @@ func (rc *RedisCache) Set(key string, value interface{}) error {
 		return err
 	}
 
-	compressedValue, err := rc.compressionProvider.Compress(marshalledValue)
-	if err != nil {
-		return err
+	var input []byte
+	if rc.compressionEngine == nil {
+		input = marshalledValue
+	} else {
+		input, err = rc.compressionEngine.Compress(marshalledValue)
+		if err != nil {
+			return err
+		}
 	}
+
 	rc.logger.Print("redis set " + rc.keyPrefix + key)
-	return rc.redisClient.Set(ctx, rc.keyPrefix+key, compressedValue, rc.ttl).Err()
+	return rc.redisClient.Set(ctx, rc.keyPrefix+key, input, rc.ttl).Err()
 }
 
 // Delete removes a key from cache

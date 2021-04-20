@@ -42,12 +42,6 @@ type CacheEngine interface {
 	Purge() error
 }
 
-// CompressionProvider defines compression method
-type CompressionProvider interface {
-	Compress(src []byte) ([]byte, error)
-	Decompress(src []byte) ([]byte, error)
-}
-
 // Cache is an implementation of a cache (key-value store).
 // It needs to be provided with cache engine.
 type Cache struct {

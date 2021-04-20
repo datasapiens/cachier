@@ -8,7 +8,5 @@ require (
 	github.com/go-redis/redis/v8 v8.8.0
 	github.com/hashicorp/golang-lru v0.5.4
 	github.com/klauspost/compress v1.12.1
-	github.com/klauspost/pgzip v1.2.5
-	github.com/pierrec/lz4/v4 v4.1.6
 	github.com/stretchr/testify v1.7.0
 )
