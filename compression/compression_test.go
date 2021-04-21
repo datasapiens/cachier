@@ -123,8 +123,8 @@ func TestCompressionWithProvider(t *testing.T) {
 }
 
 func TestBigBufferCompression(t *testing.T) {
-	t.SkipNow()
-	repetitionPerFile := 4
+	// t.SkipNow()
+	repetitionPerFile := 10
 	testFiles := []string{
 		"/home/marcin/Downloads/cache/cache_samples/cache_wtf",
 		"/home/marcin/Downloads/cache/cache_samples/cache_products",

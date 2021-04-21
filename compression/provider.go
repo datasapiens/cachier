@@ -2,7 +2,6 @@ package compression
 
 import (
 	"bytes"
-	"encoding/binary"
 	"io"
 
 	"github.com/DataDog/zstd"
@@ -40,12 +39,12 @@ type noCompression struct {
 
 // Compress returns src without any changes.
 func (c noCompression) Compress(src []byte) ([]byte, error) {
-	return append(src, c.id), nil
+	return src, nil
 }
 
 // Decompress returns src without any changes.
-func (c noCompression) Decompress(src []byte) ([]byte, error) {
-	return src[:len(src)-providerIDLengthInByte], nil
+func (c noCompression) Decompress(src []byte, dstSize int) ([]byte, error) {
+	return src, nil
 }
 
 // GetID returns compression identifier.
@@ -66,22 +65,13 @@ func (c zstdCompression) Compress(src []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	metadata, err := getMetadata(c.id, len(src))
-	if err != nil {
-		return nil, err
-	}
-
-	return append(output, metadata...), nil
+	return output, nil
 }
 
 // Decompress decompresses src  using zstd method
-func (c zstdCompression) Decompress(src []byte) ([]byte, error) {
-	input, dstSize, err := extractMetadata(src)
-	if err != nil {
-		return nil, err
-	}
+func (c zstdCompression) Decompress(src []byte, dstSize int) ([]byte, error) {
 	dst := make([]byte, 0, dstSize)
-	output, err := zstd.Decompress(dst, input)
+	output, err := zstd.Decompress(dst, src)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +83,7 @@ func (c zstdCompression) GetID() byte {
 	return c.id
 }
 
-// GetID returns compression identifier.
+// SetCompressionLevel allows to set compression level
 func (c *zstdCompression) SetCompressionLevel(level int) *zstdCompression {
 	c.compressionLevel = level
 	return c
@@ -103,7 +93,7 @@ type s2Compression struct {
 	id byte
 }
 
-// Compress compresses src  using lz4 method poreted from C
+// Compress compresses src  using s2 method
 func (c s2Compression) Compress(src []byte) ([]byte, error) {
 
 	var out bytes.Buffer
@@ -118,24 +108,15 @@ func (c s2Compression) Compress(src []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	metadata, err := getMetadata(c.id, len(src))
-	if err != nil {
-		return nil, err
-	}
-	_, err = out.Write(metadata)
 	return out.Bytes(), err
 }
 
-// Decompress decompresses src  using lz4 method
-func (c s2Compression) Decompress(src []byte) ([]byte, error) {
-	input, _, err := extractMetadata(src)
-	if err != nil {
-		return nil, err
-	}
-	r := bytes.NewReader(input)
+// Decompress decompresses src  using s2 method
+func (c s2Compression) Decompress(src []byte, dstSize int) ([]byte, error) {
+	r := bytes.NewReader(src)
 	dec := s2.NewReader(r)
 	var out bytes.Buffer
-	_, err = io.Copy(&out, dec)
+	_, err := io.Copy(&out, dec)
 
 	if err != nil {
 		return nil, err
@@ -161,22 +142,13 @@ func (c lz4Compression) Compress(src []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	metadata, err := getMetadata(c.id, len(src))
-	if err != nil {
-		return nil, err
-	}
-
-	return append(output[:outSize], metadata...), nil
+	return output[:outSize], nil
 }
 
 // Decompress decompresses src  using lz4 method
-func (c lz4Compression) Decompress(src []byte) ([]byte, error) {
-	input, dstSize, err := extractMetadata(src)
-	if err != nil {
-		return nil, err
-	}
+func (c lz4Compression) Decompress(src []byte, dstSize int) ([]byte, error) {
 	dst := make([]byte, dstSize)
-	err = lz4.Uncompress(input, dst)
+	err := lz4.Uncompress(src, dst)
 	if err != nil {
 		return nil, err
 	}
@@ -187,26 +159,4 @@ func (c lz4Compression) Decompress(src []byte) ([]byte, error) {
 // GetID returns compression identifier.
 func (c lz4Compression) GetID() byte {
 	return c.id
-}
-
-func getMetadata(methodIdentifier byte, inputLenght int) ([]byte, error) {
-	buff := bytes.NewBuffer(make([]byte, 0, metadataSizeInByte))
-	err := binary.Write(buff, byteOrder, uint64(inputLenght))
-	if err != nil {
-		return nil, err
-	}
-	err = buff.WriteByte(methodIdentifier)
-	if err != nil {
-		return nil, err
-	}
-	return buff.Bytes(), nil
-}
-
-func extractMetadata(input []byte) ([]byte, int, error) {
-	if len(input) < metadataSizeInByte {
-		return nil, 0, ErrMissingMetadata
-	}
-	output := input[:len(input)-metadataSizeInByte]
-	dstSize := byteOrder.Uint64(input[len(input)-metadataSizeInByte : len(input)-providerIDLengthInByte])
-	return output, int(dstSize), nil
 }

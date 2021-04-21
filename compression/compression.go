@@ -1,6 +1,7 @@
 package compression
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"sync"
@@ -8,21 +9,21 @@ import (
 
 const providerIDLengthInByte = 1
 const originalSizeLengthInByte = 8
-const metadataSizeInByte = providerIDLengthInByte + originalSizeLengthInByte
+const footerSizeInByte = providerIDLengthInByte + originalSizeLengthInByte
 const notCompressedBufferSize = 1024
 
 var byteOrder = binary.LittleEndian
 
 // Errors
 var (
-	ErrMissingMetadata  = fmt.Errorf("corrupted input data")
+	ErrMissingFooter    = fmt.Errorf("corrupted input data; cannot extract footer")
 	ErrProviderNotFound = fmt.Errorf("cannot find compression provider by ID")
 )
 
 // Provider defines compression method
 type Provider interface {
 	Compress(src []byte) ([]byte, error)
-	Decompress(src []byte) ([]byte, error)
+	Decompress(src []byte, dstSize int) ([]byte, error)
 	GetID() byte
 }
 
@@ -85,7 +86,12 @@ func (ce *Engine) Compress(input []byte) ([]byte, error) {
 	}
 	ce.mutex.RUnlock()
 
-	return provider.Compress(input)
+	output, err := provider.Compress(input)
+	if err != nil {
+		return nil, err
+	}
+
+	return ce.addFooter(output, provider.GetID(), len(input))
 }
 
 // CompressWithProviderinput compresses input buffer using given compression provider
@@ -107,13 +113,20 @@ func (ce *Engine) CompressWithProvider(input []byte, providerID byte) ([]byte, e
 		}
 	}
 	ce.mutex.RUnlock()
-	return provider.Compress(input)
+	output, err := provider.Compress(input)
+	if err != nil {
+		return nil, err
+	}
+	return ce.addFooter(output, provider.GetID(), len(input))
 }
 
 // Decompress extracts from input the information about used compression method.
 // If compression provider is found - the data are decompressed
 func (ce *Engine) Decompress(input []byte) ([]byte, error) {
-	providerID := input[len(input)-providerIDLengthInByte]
+	src, providerID, dstSize, err := ce.extractFooter(input)
+	if err != nil {
+		return nil, err
+	}
 	ce.mutex.RLock()
 	provider, ok := ce.providers[providerID]
 	if !ok {
@@ -121,7 +134,8 @@ func (ce *Engine) Decompress(input []byte) ([]byte, error) {
 		return nil, ErrProviderNotFound
 	}
 	ce.mutex.RUnlock()
-	return provider.Decompress(input)
+
+	return provider.Decompress(src, dstSize)
 }
 
 // AddProvider adds compression provider to the list of supported providers
@@ -172,4 +186,53 @@ func (ce *Engine) SetDefaultProvider(id byte) error {
 	ce.defaultCompressionID = id
 
 	return nil
+}
+
+// addFooter addes footer to compressed data
+func (ce *Engine) addFooter(compressedInput []byte, providerID byte, inputLenght int) ([]byte, error) {
+	if providerID == ce.noCompressionID {
+		buff := bytes.NewBuffer(make([]byte, 0, providerIDLengthInByte))
+		err := buff.WriteByte(providerID)
+		if err != nil {
+			return nil, err
+		}
+		return append(compressedInput, buff.Bytes()...), nil
+	}
+
+	buff := bytes.NewBuffer(make([]byte, 0, footerSizeInByte))
+	err := binary.Write(buff, byteOrder, uint64(inputLenght))
+	if err != nil {
+		return nil, err
+	}
+	err = buff.WriteByte(providerID)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(compressedInput, buff.Bytes()...), nil
+}
+
+// extractFooter extracts footer from comressed data and returs:
+// - input without footer,
+// - used compression provider ID,
+// - original size of compressed data
+// - error if data are corrupted
+func (ce *Engine) extractFooter(input []byte) ([]byte, byte, int, error) {
+	providerID := input[len(input)-providerIDLengthInByte]
+	if providerID == ce.noCompressionID {
+		inputLen := len(input)
+		if len(input) < providerIDLengthInByte {
+			return nil, 0, 0, ErrMissingFooter
+		}
+		return input[:inputLen-providerIDLengthInByte], providerID, inputLen - 1, nil
+	}
+
+	if len(input) < footerSizeInByte {
+		return nil, 0, 0, ErrMissingFooter
+	}
+
+	output := input[:len(input)-footerSizeInByte]
+	dstSize := byteOrder.Uint64(input[len(input)-footerSizeInByte : len(input)-providerIDLengthInByte])
+
+	return output, providerID, int(dstSize), nil
 }
