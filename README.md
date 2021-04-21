@@ -100,4 +100,8 @@ Provider cannot manage the footer. The footer is manged by the `Engine`. The `En
 - adds footer to compressed data,
 - extracts the compressed data and footer from the input; the providers is suplied with the input without the footer. 
 
+## How change compression level for ZSTD?
+
+To change compression level just add once again the `ZstdCompressionService` as default provider and set level:
+- `compression.Engine.AddDefaultProvider(compression.ZstdCompressionService.SetCompressionLevel(5))`
 
