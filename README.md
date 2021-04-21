@@ -30,7 +30,7 @@ Compression can be used with Redis Cache. There are three compression providers 
 
 Every provider has an unique identifier (ID). Provider id must be <= 255. It must be written in one byte
 
-- `NoCompressionService`   - 0 - special provider for not compressed data
+- `NoCompressionService`   - 0 - special provider for small input data (<= 1KB)
 - `ZstdCompressionService` - 1
 - `S2CompressionService`   - 2 
 - `Lz4CompressionService`  - 3
