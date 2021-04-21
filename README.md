@@ -91,7 +91,7 @@ There is added a footer to the compressed data. The footer size is:
 
 ## How to implement a new compression provider?
 
-Compression provider has to  implements an interface `compression.Provider` by implementing its methods
+Compression provider has to implement an interface `compression.Provider` by implementing its methods
 - `Compress(src []byte) ([]byte, error)`
 - `Decompress(src []byte, dstSize int) ([]byte, error)`
 - `GetID() byte`
