@@ -100,8 +100,9 @@ func (rc *RedisCache) Get(key string) (interface{}, error) {
 	} else {
 		input, err = rc.compressionEngine.Decompress([]byte(value))
 		if err != nil {
+			// backward compatibility for not compressed entries
 			rc.Delete(key)
-			return nil, err
+			return nil, ErrNotFound
 		}
 	}
 
