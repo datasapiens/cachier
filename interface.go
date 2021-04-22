@@ -22,6 +22,7 @@ package cachier
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -60,23 +61,30 @@ func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) 
 	value, _ := c.computeLocks.LoadOrStore(key, &sync.Mutex{})
 	mutex := value.(*sync.Mutex)
 	mutex.Lock()
-	defer func() {
-		c.computeLocks.Delete(key)
-		mutex.Unlock()
-	}()
 
 	value, err := c.Get(key)
 	if err == nil {
+		c.computeLocks.Delete(key)
+		mutex.Unlock()
 		return value, nil
 	}
 	if err == ErrNotFound {
 		value, err := evaluator()
-		if err != nil {
-			return nil, err
+		if err == nil {
+			go func() {
+				err := c.Set(key, value)
+				c.computeLocks.Delete(key)
+				mutex.Unlock()
+				if err != nil {
+					fmt.Printf("%+v", err)
+				}
+			}()
+			return value, nil
 		}
-		err = c.Set(key, value)
-		return value, err
+
 	}
+	c.computeLocks.Delete(key)
+	mutex.Unlock()
 	return nil, err
 }
 
