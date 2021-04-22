@@ -100,17 +100,8 @@ func (rc *RedisCache) Get(key string) (interface{}, error) {
 	} else {
 		input, err = rc.compressionEngine.Decompress([]byte(value))
 		if err != nil {
-			// backward compatibility with old, not cached entires in cache
-			// remove the key
 			rc.Delete(key)
-			//try to unmarshal the data
-			var result interface{}
-			err = rc.unmarshal([]byte(value), &result)
-			if err != nil {
-				return nil, err
-			}
-			// data unmarshalled so then no error
-			return result, nil
+			return nil, err
 		}
 	}
 
