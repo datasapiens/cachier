@@ -3,6 +3,7 @@ package compression
 import (
 	"bytes"
 	"io"
+	"sync"
 
 	"github.com/DataDog/zstd"
 	lz4 "github.com/cloudflare/golz4"
@@ -25,6 +26,14 @@ var ZstdCompressionService *zstdCompression = &zstdCompression{
 // github.com/klauspost/compress/s2
 var S2CompressionService *s2Compression = &s2Compression{
 	id: 2,
+	readerPool: &sync.Pool{
+		New: func() interface{} {
+			return s2.NewReader(nil)
+		}},
+	writterPool: &sync.Pool{
+		New: func() interface{} {
+			return s2.NewWriter(nil)
+		}},
 }
 
 // Lz4CompressionService uses lz4 compression
@@ -90,14 +99,17 @@ func (c *zstdCompression) SetCompressionLevel(level int) *zstdCompression {
 }
 
 type s2Compression struct {
-	id byte
+	id          byte
+	writterPool *sync.Pool
+	readerPool  *sync.Pool
 }
 
 // Compress compresses src  using s2 method
 func (c s2Compression) Compress(src []byte) ([]byte, error) {
-
+	enc := c.writterPool.Get().(*s2.Writer)
+	defer c.writterPool.Put(enc)
 	var out bytes.Buffer
-	enc := s2.NewWriter(&out)
+	enc.Reset(&out)
 	err := enc.EncodeBuffer(src)
 	if err != nil {
 		enc.Close()
@@ -113,8 +125,10 @@ func (c s2Compression) Compress(src []byte) ([]byte, error) {
 
 // Decompress decompresses src  using s2 method
 func (c s2Compression) Decompress(src []byte, dstSize int) ([]byte, error) {
+	dec := c.readerPool.Get().(*s2.Reader)
+	defer c.readerPool.Put(dec)
 	r := bytes.NewReader(src)
-	dec := s2.NewReader(r)
+	dec.Reset(r)
 	var out bytes.Buffer
 	_, err := io.Copy(&out, dec)
 
