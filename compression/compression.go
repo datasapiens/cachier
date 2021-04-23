@@ -36,21 +36,31 @@ type Engine struct {
 	mutex                sync.RWMutex
 }
 
-// NewEngine creates copression engine with default values
-// default compression method - ZSTD with compression level 3
+// NewEngine creates copression engine with given default provider ID
+// If providerID == 0 it means no compression so it is returned `nil,nil`;
 // defult not compressed buffer size - 1024 bytes
-func NewEngine() *Engine {
+func NewEngine(providerID byte) (*Engine, error) {
+	if providerID == 0 {
+		// it means no compression, so no error is returned
+		return nil, nil
+	}
+
+	provider, err := GetProviderByID(providerID)
+	if err != nil {
+		return nil, err
+	}
+
 	providers := map[byte]Provider{
-		NoCompressionService.GetID():   NoCompressionService,
-		ZstdCompressionService.GetID(): ZstdCompressionService,
+		NoCompressionService.GetID(): NoCompressionService,
+		provider.GetID():             provider,
 	}
 
 	return &Engine{
 		noCompressionID:      NoCompressionService.GetID(),
-		defaultCompressionID: ZstdCompressionService.GetID(),
+		defaultCompressionID: provider.GetID(),
 		providers:            providers,
 		minInputSize:         notCompressedBufferSize,
-	}
+	}, nil
 }
 
 // NewEngineAll creates copression engine with default values

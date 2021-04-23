@@ -10,6 +10,21 @@ import (
 	"github.com/klauspost/compress/s2"
 )
 
+var buildInProviders = map[byte]Provider{
+	ZstdCompressionService.GetID(): ZstdCompressionService,
+	S2CompressionService.GetID():   S2CompressionService,
+	Lz4CompressionService.GetID():  Lz4CompressionService,
+}
+
+func GetProviderByID(id byte) (Provider, error) {
+
+	provider, ok := buildInProviders[id]
+	if !ok {
+		return nil, ErrProviderNotFound
+	}
+	return provider, nil
+}
+
 // NoCompressionService uses no compression
 var NoCompressionService *noCompression = &noCompression{
 	id: 0,

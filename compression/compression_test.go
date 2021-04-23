@@ -23,7 +23,8 @@ func randTextBytes(n int) []byte {
 }
 
 func TestNoCompressionRandomBytes(t *testing.T) {
-	engine := NewEngine()
+	engine, err := NewEngine(1)
+	require.Nil(t, err)
 	input := randTextBytes(1024)
 	output, err := engine.Compress(input)
 	require.Nil(t, err)
@@ -36,7 +37,8 @@ func TestNoCompressionRandomBytes(t *testing.T) {
 }
 
 func TestNoCompressionIncreaseMinSize(t *testing.T) {
-	engine := NewEngine()
+	engine, err := NewEngine(1)
+	require.Nil(t, err)
 	input := randTextBytes(2048)
 	output, err := engine.Compress(input)
 	require.Nil(t, err)
@@ -61,7 +63,8 @@ func TestNoCompressionIncreaseMinSize(t *testing.T) {
 }
 
 func TestNoCompressionLongString(t *testing.T) {
-	engine := NewEngine()
+	engine, err := NewEngine(1)
+	require.Nil(t, err)
 	s := "hello world"
 	input := []byte(strings.Repeat(s, 50))
 	output, err := engine.Compress(input)
@@ -75,7 +78,8 @@ func TestNoCompressionLongString(t *testing.T) {
 }
 
 func TestDefaultCompressionLongString(t *testing.T) {
-	engine := NewEngine()
+	engine, err := NewEngine(1)
+	require.Nil(t, err)
 	s := "hello world"
 	input := []byte(strings.Repeat(s, 400))
 	output, err := engine.Compress(input)
@@ -89,7 +93,8 @@ func TestDefaultCompressionLongString(t *testing.T) {
 }
 
 func TestAddDefaultCompressionLongString(t *testing.T) {
-	engine := NewEngine().AddDefaultProvider(S2CompressionService)
+	engine, _ := NewEngine(1)
+	engine.AddDefaultProvider(S2CompressionService)
 	s := "hello world"
 	input := []byte(strings.Repeat(s, 400))
 	output, err := engine.Compress(input)
@@ -147,11 +152,11 @@ func TestBigBufferCompression(t *testing.T) {
 			provider: Lz4CompressionService,
 		},
 	}
-	engine := NewEngine()
+	engine := NewEngineAll()
 	for _, tt := range testData {
 		t.Run(tt.testName, func(t *testing.T) {
 			t.Logf("---- %s ----", tt.testName)
-			engine.AddDefaultProvider(tt.provider)
+			engine.SetDefaultProvider(tt.provider.GetID())
 			for _, path := range testFiles {
 				buf, err := ioutil.ReadFile(path)
 				require.Nil(t, err)
