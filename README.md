@@ -46,19 +46,27 @@ The compression engine uses compresison providers to compress and decompress dat
 In order to start using compression add `*compression.Engine` to the redis cache constructor
 
 ``` 
+engine, err := compression.NewEngine(providerID)
 NewRedisCache(
 	redisClient 
 	keyPrefix,
 	marshal,
 	unmarshal,
 	ttl,
-	compression.NewEngine(),
+	engine,
 ```
-Where `compression.NewEngine()` creates `*compression.Engine` with default values:
-- compression method - zstd with compression level 3
+Where `compression.NewEngine(providerID byte)` creates `*compression.Engine` where
+- default compression engine is selected based on providerID
 - input <= 1 KB is not compressed
 
-Only input compressed with zstd can be decompressed because `compression.Engine` contains only one provider (zstd) (it can be changed)
+Provider id can be:
+- 0 - no compression, the function returns nil, nil
+- 1 - zstd compression
+- 2 - s2 compression
+- 3 - lz4 compression
+
+If the engine is created in the following way `compression.NewEngine(1)`
+only input compressed with zstd can be decompressed because `compression.Engine` contains only one provider (zstd) (it can be changed)
 
 Other compression providers can be easily added to the `Engine`:
 
