@@ -21,12 +21,11 @@
 package cachier
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"sync"
-
-	"github.com/pkg/errors"
 )
 
 // Errors
@@ -91,7 +90,7 @@ func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) 
 	} else {
 		// evalutation error
 		value = nil
-		err = errors.Wrap(err, evaluatorErr.Error())
+		err = evaluatorErr
 	}
 
 	c.computeLocks.Delete(key)
