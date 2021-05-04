@@ -134,7 +134,7 @@ func TestRedisCacheWithCompressionJSON(t *testing.T) {
 		t.Skipf("skipping because of redis error: %s", err.Error())
 	}
 
-	engine, err := compression.NewEngine(1)
+	engine, err := compression.NewEngine(compression.ZstdCompressionService.GetID())
 	require.Nil(t, err)
 	rc := NewRedisCache(
 		redisClient,
@@ -183,7 +183,7 @@ func TestRedisCacheWithCompressionGOB(t *testing.T) {
 		Key string
 	}
 
-	engine, err := compression.NewEngine(1)
+	engine, err := compression.NewEngine(compression.ZstdCompressionService.GetID())
 	require.Nil(t, err)
 
 	rc := NewRedisCache(
@@ -229,7 +229,7 @@ func TestRedisCacheWithCompressionGOB(t *testing.T) {
 
 func TestLRUCacheWithCompressionJSON(t *testing.T) {
 
-	engine, err := compression.NewEngine(1)
+	engine, err := compression.NewEngine(compression.ZstdCompressionService.GetID())
 	require.Nil(t, err)
 	lc, err := NewLRUCache(300,
 		func(value interface{}) ([]byte, error) {
@@ -270,7 +270,7 @@ func TestLRUCacheWithCompressionGOB(t *testing.T) {
 		ID  int
 		Key string
 	}
-	engine, err := compression.NewEngine(1)
+	engine, err := compression.NewEngine(compression.ZstdCompressionService.GetID())
 	require.Nil(t, err)
 	lc, err := NewLRUCache(300,
 		func(value interface{}) ([]byte, error) {
