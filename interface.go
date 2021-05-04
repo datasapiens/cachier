@@ -55,8 +55,9 @@ func MakeCache(engine CacheEngine) *Cache {
 	return &Cache{CacheEngine: engine}
 }
 
-// GetOrCompute tries to get value from cache. If not found, it computes the
-// value using provided evaluator function and stores it into cache.
+// GetOrCompute tries to get value from cache.
+// If not found, it computes the value using provided evaluator function and stores it into cache.
+// In case of other errors the value is evaluated but not stored in the cache.
 func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) (interface{}, error) {
 	value, _ := c.computeLocks.LoadOrStore(key, &sync.Mutex{})
 	mutex := value.(*sync.Mutex)
@@ -68,10 +69,15 @@ func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) 
 		mutex.Unlock()
 		return value, nil
 	}
-	if err == ErrNotFound {
-		value, err := evaluator()
-		if err == nil {
+
+	value, evaluatorErr := evaluator()
+
+	if evaluatorErr == nil {
+		// value evaluted correctly
+		if err == ErrNotFound {
+			// Key not found on cache
 			go func() {
+				// Set key to cache in gorutine
 				err := c.Set(key, value)
 				c.computeLocks.Delete(key)
 				mutex.Unlock()
@@ -81,11 +87,15 @@ func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) 
 			}()
 			return value, nil
 		}
-
+	} else {
+		// evalutation error
+		value = nil
+		err = evaluatorErr
 	}
+
 	c.computeLocks.Delete(key)
 	mutex.Unlock()
-	return nil, err
+	return value, err
 }
 
 // DeleteWithPrefix removes all keys that start with given prefix
