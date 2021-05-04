@@ -89,8 +89,10 @@ func (rc *RedisCache) Get(key string) (interface{}, error) {
 	value, err := rc.redisClient.Get(ctx, rc.keyPrefix+key).Result()
 
 	if err == redis.Nil {
+		rc.logger.Print("redis: key not found:", key)
 		return nil, ErrNotFound
 	} else if err != nil {
+		rc.logger.Error("redis: error getting data with key: ", key, " error: ", err)
 		return nil, err
 	}
 
@@ -120,6 +122,7 @@ func (rc *RedisCache) Peek(key string) (interface{}, error) {
 func (rc *RedisCache) Set(key string, value interface{}) error {
 	marshalledValue, err := rc.marshal(value)
 	if err != nil {
+		rc.logger.Error("redis: error marshaling data: ", err)
 		return err
 	}
 
@@ -129,12 +132,18 @@ func (rc *RedisCache) Set(key string, value interface{}) error {
 	} else {
 		input, err = rc.compressionEngine.Compress(marshalledValue)
 		if err != nil {
+			rc.logger.Error("redis: error compressing data: ", err)
 			return err
 		}
 	}
 
 	rc.logger.Print("redis set " + rc.keyPrefix + key)
-	return rc.redisClient.Set(ctx, rc.keyPrefix+key, input, rc.ttl).Err()
+	status := rc.redisClient.Set(ctx, rc.keyPrefix+key, input, rc.ttl)
+	if status.Err() != nil {
+		rc.logger.Error("redis: error setting data in cache: ", err)
+		return status.Err()
+	}
+	return nil
 }
 
 // Delete removes a key from cache

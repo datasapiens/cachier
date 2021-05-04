@@ -22,7 +22,6 @@ package cachier
 
 import (
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -78,12 +77,9 @@ func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) 
 			// Key not found on cache
 			go func() {
 				// Set key to cache in gorutine
-				err := c.Set(key, value)
+				c.Set(key, value)
 				c.computeLocks.Delete(key)
 				mutex.Unlock()
-				if err != nil {
-					fmt.Printf("%+v", err)
-				}
 			}()
 			return value, nil
 		}

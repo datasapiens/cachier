@@ -14,6 +14,7 @@ type LRUCache struct {
 	marshal           func(value interface{}) ([]byte, error)
 	unmarshal         func(b []byte, value *interface{}) error
 	compressionEngine *compression.Engine
+	logger            Logger
 }
 
 // NewLRUCache is a constructor that creates LRU cache of given size
@@ -34,6 +35,27 @@ func NewLRUCache(
 		marshal:           marshal,
 		unmarshal:         unmarshal,
 		compressionEngine: compressionEngine,
+		logger:            DummyLogger{},
+	}, nil
+}
+
+func NewLRUCacheWithLogger(
+	size int,
+	marshal func(value interface{}) ([]byte, error),
+	unmarshal func(b []byte, value *interface{}) error,
+	logger Logger,
+	compressionEngine *compression.Engine,
+) (*LRUCache, error) {
+	lruHashicorp, err := lru.New(size)
+	if err != nil {
+		return nil, err
+	}
+	return &LRUCache{
+		lru:               lruHashicorp,
+		marshal:           marshal,
+		unmarshal:         unmarshal,
+		compressionEngine: compressionEngine,
+		logger:            logger,
 	}, nil
 }
 
@@ -48,7 +70,11 @@ func (lc *LRUCache) Get(key string) (interface{}, error) {
 		return value, nil
 	}
 
-	return lc.decompress(key, value)
+	output, err := lc.decompress(key, value)
+	if err != nil {
+		lc.logger.Error("lru: error decompressing data: ", err)
+	}
+	return output, err
 }
 
 func (lc *LRUCache) decompress(key string, value interface{}) (interface{}, error) {
@@ -79,7 +105,11 @@ func (lc *LRUCache) Peek(key string) (interface{}, error) {
 		return value, nil
 	}
 
-	return lc.decompress(key, value)
+	output, err := lc.decompress(key, value)
+	if err != nil {
+		lc.logger.Error("lru: error decompressing data: ", err)
+	}
+	return output, err
 }
 
 // Set stores given key-value pair into cache
@@ -91,11 +121,13 @@ func (lc *LRUCache) Set(key string, value interface{}) error {
 
 	marshalledValue, err := lc.marshal(value)
 	if err != nil {
+		lc.logger.Error("lru: error marshaling data: ", err)
 		return err
 	}
 
 	input, err := lc.compressionEngine.Compress(marshalledValue)
 	if err != nil {
+		lc.logger.Error("lru: error compressing data: ", err)
 		return err
 	}
 	lc.lru.Add(key, input)
