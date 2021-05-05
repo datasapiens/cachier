@@ -10,14 +10,23 @@ import (
 const providerIDLengthInByte = 1
 const originalSizeLengthInByte = 8
 const footerSizeInByte = providerIDLengthInByte + originalSizeLengthInByte
-const notCompressedBufferSize = 1024
+const defaultNotCompressedBufferSize = 1024
 
 var byteOrder = binary.LittleEndian
 
+// Names of compression parameters
+const (
+	CompressionParamLevel       = "level"
+	CompressionParamMinInputLen = "minInputLen"
+)
+
 // Errors
 var (
-	ErrMissingFooter    = fmt.Errorf("corrupted input data; cannot extract footer")
-	ErrProviderNotFound = fmt.Errorf("cannot find compression provider by ID")
+	ErrMissingFooter            = fmt.Errorf("corrupted input data; cannot extract footer")
+	ErrProviderNotFound         = fmt.Errorf("cannot find compression provider by ID")
+	ErrCompressionParamNotFound = fmt.Errorf("cannot find compression parameter by name")
+	ErrCompressionParamNotInt   = fmt.Errorf("compression parameter is not an integer type")
+	ErrCompressionParamNil      = fmt.Errorf("compression parameter map cannot be nil")
 )
 
 // Provider defines compression method
@@ -25,6 +34,35 @@ type Provider interface {
 	Compress(src []byte) ([]byte, error)
 	Decompress(src []byte, dstSize int) ([]byte, error)
 	GetID() byte
+	Configure(params CompressionParams) error
+}
+
+// CompressionParams defines compression parameters used by providers
+type CompressionParams map[string]interface{}
+
+// GetInt gets value from map and tries to parse it as integer
+func (c CompressionParams) GetInt(key string) (int, error) {
+	value, found := c[key]
+	if !found {
+		return 0, ErrCompressionParamNotFound
+	}
+	i, ok := value.(int)
+
+	if !ok {
+		return i, ErrCompressionParamNotInt
+	}
+
+	return i, nil
+}
+
+// GetIntWithDefault gets value from map and tries to parse it as integer.
+// If key is not found in the map the dafule value is returned
+func (c CompressionParams) GetIntWithDefault(key string, defaultValue int) (int, error) {
+	value, err := c.GetInt(key)
+	if err == ErrCompressionParamNotFound {
+		return defaultValue, nil
+	}
+	return value, err
 }
 
 // Engine defines compression engine
@@ -39,48 +77,39 @@ type Engine struct {
 // NewEngine creates copression engine with given default provider ID
 // If providerID == 0 it means no compression so it is returned `nil,nil`;
 // defult not compressed buffer size - 1024 bytes
-func NewEngine(providerID byte) (*Engine, error) {
-	if providerID == 0 {
+// Supported providers: github.com/DataDog/zstd, github.com/cloudflare/golz4, github.com/klauspost/compress/s2,
+func NewEngine(defaultProviderID byte, params CompressionParams) (*Engine, error) {
+	if defaultProviderID == 0 {
 		// it means no compression, so no error is returned
 		return nil, nil
 	}
 
-	provider, err := GetProviderByID(providerID)
+	providers := getBuildInProviders()
+
+	defaultProvider, ok := providers[defaultProviderID]
+	if !ok {
+		return nil, ErrProviderNotFound
+	}
+
+	if params != nil && len(params) > 0 {
+		for _, v := range providers {
+			if err := v.Configure(params); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	minInputSize, err := params.GetIntWithDefault(CompressionParamMinInputLen, defaultNotCompressedBufferSize)
 	if err != nil {
 		return nil, err
 	}
 
-	providers := map[byte]Provider{
-		NoCompressionService.GetID(): NoCompressionService,
-		provider.GetID():             provider,
-	}
-
 	return &Engine{
-		noCompressionID:      NoCompressionService.GetID(),
-		defaultCompressionID: provider.GetID(),
+		noCompressionID:      0,
+		defaultCompressionID: defaultProvider.GetID(),
 		providers:            providers,
-		minInputSize:         notCompressedBufferSize,
+		minInputSize:         minInputSize,
 	}, nil
-}
-
-// NewEngineAll creates copression engine with default values
-// default compression method - ZSTD with compression level 3
-// defult not compressed buffer size - 1024 bytes
-// Other supported providers: github.com/cloudflare/golz4, github.com/klauspost/compress/s2
-func NewEngineAll() *Engine {
-	providers := map[byte]Provider{
-		NoCompressionService.GetID():   NoCompressionService,
-		ZstdCompressionService.GetID(): ZstdCompressionService,
-		Lz4CompressionService.GetID():  Lz4CompressionService,
-		S2CompressionService.GetID():   S2CompressionService,
-	}
-
-	return &Engine{
-		noCompressionID:      NoCompressionService.GetID(),
-		defaultCompressionID: ZstdCompressionService.GetID(),
-		providers:            providers,
-		minInputSize:         notCompressedBufferSize,
-	}
 }
 
 // Compress compresses input buffer using default compression provider

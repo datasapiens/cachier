@@ -10,51 +10,79 @@ import (
 	"github.com/klauspost/compress/s2"
 )
 
-var buildInProviders = map[byte]Provider{
-	ZstdCompressionService.GetID(): ZstdCompressionService,
-	S2CompressionService.GetID():   S2CompressionService,
-	Lz4CompressionService.GetID():  Lz4CompressionService,
+// IDs of build in compression providers
+const (
+	ProviderIDZstd = 1
+	ProviderIDS2   = 2
+	ProviderIDLz4  = 3
+)
+
+var providerNameToID = map[string]byte{
+	"zstd": ProviderIDZstd,
+	"s2":   ProviderIDS2,
+	"lz4":  ProviderIDLz4,
 }
 
-func GetProviderByID(id byte) (Provider, error) {
-
-	provider, ok := buildInProviders[id]
+func GetProviderID(name string) (byte, error) {
+	providerID, ok := providerNameToID[name]
 	if !ok {
-		return nil, ErrProviderNotFound
+		return 0, ErrProviderNotFound
 	}
-	return provider, nil
+	return providerID, nil
 }
 
-// NoCompressionService uses no compression
-var NoCompressionService *noCompression = &noCompression{
-	id: 0,
+func getBuildInProviders() map[byte]Provider {
+
+	noCompression := NewNoCompressionService()
+	zstdCompression := NewZstdCompressionService()
+	lz4Compression := NewLz4CompressionService()
+	s2Compression := NewS2CompressionService()
+
+	providers := map[byte]Provider{
+		noCompression.GetID():   noCompression,
+		zstdCompression.GetID(): zstdCompression,
+		lz4Compression.GetID():  lz4Compression,
+		s2Compression.GetID():   s2Compression,
+	}
+
+	return providers
 }
 
-// ZstdCompressionService uses  zstd compression method
-// github.com/DataDog/zstd
-var ZstdCompressionService *zstdCompression = &zstdCompression{
-	id:               1,
-	compressionLevel: 3,
+// NewNoCompressionService creates new instance of compression provider which is not using the compression
+func NewNoCompressionService() Provider {
+	return &noCompression{
+		id: 0,
+	}
 }
 
-// S2CompressionService uses s2/snappy compression method
-// github.com/klauspost/compress/s2
-var S2CompressionService *s2Compression = &s2Compression{
-	id: 2,
-	readerPool: &sync.Pool{
-		New: func() interface{} {
-			return s2.NewReader(nil)
-		}},
-	writterPool: &sync.Pool{
-		New: func() interface{} {
-			return s2.NewWriter(nil)
-		}},
+// NewZstdCompressionService creates new instance of compression provider which uses github.com/DataDog/zstd compression method
+func NewZstdCompressionService() Provider {
+	return &zstdCompression{
+		id:               ProviderIDZstd,
+		compressionLevel: 3,
+	}
 }
 
-// Lz4CompressionService uses lz4 compression
-// github.com/cloudflare/golz4
-var Lz4CompressionService *lz4Compression = &lz4Compression{
-	id: 3,
+// NewS2CompressionService creates new instance of compression provider which uses github.com/klauspost/compress/s2 compression method
+func NewS2CompressionService() Provider {
+	return &s2Compression{
+		id: ProviderIDS2,
+		readerPool: &sync.Pool{
+			New: func() interface{} {
+				return s2.NewReader(nil)
+			}},
+		writterPool: &sync.Pool{
+			New: func() interface{} {
+				return s2.NewWriter(nil)
+			}},
+	}
+}
+
+// NewS2CompressionService creates new instance of compression provider which uses github.com/klauspost/compress/s2 compression method
+func NewLz4CompressionService() Provider {
+	return &lz4Compression{
+		id: ProviderIDLz4,
+	}
 }
 
 type noCompression struct {
@@ -69,6 +97,10 @@ func (c noCompression) Compress(src []byte) ([]byte, error) {
 // Decompress returns src without any changes.
 func (c noCompression) Decompress(src []byte, dstSize int) ([]byte, error) {
 	return src, nil
+}
+
+func (c *noCompression) Configure(params CompressionParams) error {
+	return nil
 }
 
 // GetID returns compression identifier.
@@ -107,10 +139,19 @@ func (c zstdCompression) GetID() byte {
 	return c.id
 }
 
-// SetCompressionLevel allows to set compression level
-func (c *zstdCompression) SetCompressionLevel(level int) *zstdCompression {
+// GetID returns compression identifier.
+func (c *zstdCompression) Configure(params CompressionParams) error {
+	if params == nil {
+		return ErrCompressionParamNil
+	}
+
+	level, err := params.GetInt(CompressionParamLevel)
+	if err != nil {
+		return err
+	}
+
 	c.compressionLevel = level
-	return c
+	return nil
 }
 
 type s2Compression struct {
@@ -159,6 +200,10 @@ func (c s2Compression) GetID() byte {
 	return c.id
 }
 
+func (c *s2Compression) Configure(params CompressionParams) error {
+	return nil
+}
+
 type lz4Compression struct {
 	id byte
 }
@@ -188,4 +233,8 @@ func (c lz4Compression) Decompress(src []byte, dstSize int) ([]byte, error) {
 // GetID returns compression identifier.
 func (c lz4Compression) GetID() byte {
 	return c.id
+}
+
+func (c *lz4Compression) Configure(params CompressionParams) error {
+	return nil
 }

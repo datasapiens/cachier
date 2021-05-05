@@ -24,16 +24,16 @@ There are also three implementations included:
 # Compression
 
 Compression can be used with Redis Cache. There are three compression providers implemented: 
-- `ZstdCompressionService` (github.com/DataDog/zstd),
-- `S2CompressionService` (github.com/klauspost/compress/s2),
-- `Lz4CompressionService` (github.com/cloudflare/golz4).
+- `Zstd` (github.com/DataDog/zstd),
+- `S2` (github.com/klauspost/compress/s2),
+- `Lz4` (github.com/cloudflare/golz4).
 
 Every provider has an unique identifier (ID). Provider id must be <= 255. It must be written in one byte
 
-- `NoCompressionService`   - 0 - special provider for small input data (<= 1KB)
-- `ZstdCompressionService` - 1
-- `S2CompressionService`   - 2 
-- `Lz4CompressionService`  - 3
+- `NoCompression`   - 0 - special provider for small input data (<= 1KB)
+- `Zstd` - 1
+- `S2`   - 2 
+- `Lz4`  - 3
 
 
 Input data which are smaller or equal 1KB are never compressed by default
@@ -46,7 +46,7 @@ The compression engine uses compresison providers to compress and decompress dat
 In order to start using compression add `*compression.Engine` to the redis cache constructor
 
 ``` 
-engine, err := compression.NewEngine(providerID)
+engine, err := compression.NewEngine(providerID,compressionParameters)
 NewRedisCache(
 	redisClient 
 	keyPrefix,
@@ -55,9 +55,13 @@ NewRedisCache(
 	ttl,
 	engine,
 ```
-Where `compression.NewEngine(providerID byte)` creates `*compression.Engine` where
+Where `compression.NewEngine(providerID byte, compressionParameters map[string]interface{})` creates `*compression.Engine` where
 - default compression engine is selected based on providerID
+- supported compression providers: zstd, lz4, s2
 - input <= 1 KB is not compressed
+- compressionParameters map contains compression parameters which are used to configure the engine and providers. Two parameters are currently supported:
+	- level: compression level used by zstd compression
+	- minInputLen: minimum length of data which are compresed, input <= minInputLen is not compressed
 
 Provider id can be:
 - 0 - no compression, the function returns nil, nil
@@ -65,8 +69,8 @@ Provider id can be:
 - 2 - s2 compression
 - 3 - lz4 compression
 
-If the engine is created in the following way `compression.NewEngine(1)`
-only input compressed with zstd can be decompressed because `compression.Engine` contains only one provider (zstd) (it can be changed)
+If the engine is created in the following way `compression.NewEngine(1,nil)`
+ the data are compressed with Zstd method.
 
 Other compression providers can be easily added to the `Engine`:
 
@@ -76,16 +80,12 @@ Other compression providers can be easily added to the `Engine`:
 
 The defult size of not compressed input can be easily changed:
 
--  `compression.NewEngine().SetMinInputSize(2048)` -since now input <= 2 KB is not compressed
-
-There is also availbale another engine constructor `compression.NewEngineAll()` which creates `*compression.Engine` with default values:
-- compression method - zstd with compression level 3
-- input <= 1 KB is not compressed
-- other supported providers: lz4, s2 
+-  `compression.NewEngine(providerID, nil).SetMinInputSize(2048)` -since now input <= 2 KB is not compressed
+-  `compression.NewEngine(providerID byte, map[string]interface {} {"minInputLen": 2048}`
 
 If the provider is already added to the `Engine` the default provider can be selected by the provider id
 - `compression.Engine.SetDefaultProvider(2)`
-- `compression.Engine.SetDefaultProvider(Lz4CompressionService.GetID())`
+- `compression.Engine.SetDefaultProvider(ProviderIDS2)`
 
 ## Footer
 
@@ -103,6 +103,7 @@ Compression provider has to implement an interface `compression.Provider` by imp
 - `Compress(src []byte) ([]byte, error)`
 - `Decompress(src []byte, dstSize int) ([]byte, error)`
 - `GetID() byte`
+- `Configure(params CompressionParams) error`
 
 Provider cannot manage the footer. The footer is manged by the `Engine`. The `Engine`:
 - adds footer to compressed data,
@@ -110,6 +111,9 @@ Provider cannot manage the footer. The footer is manged by the `Engine`. The `En
 
 ## How change compression level for ZSTD?
 
-To change compression level just add once again the `ZstdCompressionService` as default provider and set level:
-- `compression.Engine.AddDefaultProvider(compression.ZstdCompressionService.SetCompressionLevel(5))`
+Providers can be configured using `compressionParameters`. For example: 
+```
+NewEngine(ProviderIDZstd, map[string]interface{}{
+		CompressionParamLevel: 5,
+	})
 
