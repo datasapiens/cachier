@@ -1,23 +1,61 @@
 package cachier
 
 import (
-	"github.com/hashicorp/golang-lru"
+	"fmt"
+
+	"github.com/datasapiens/cachier/compression"
+	lru "github.com/hashicorp/golang-lru"
 )
 
 // LRUCache is a wrapper of hashicorp's golang-lru cache which
 // implements cachier.Cache interface
 type LRUCache struct {
-	lru *lru.Cache
+	lru               *lru.Cache
+	marshal           func(value interface{}) ([]byte, error)
+	unmarshal         func(b []byte, value *interface{}) error
+	compressionEngine *compression.Engine
+	logger            Logger
 }
 
 // NewLRUCache is a constructor that creates LRU cache of given size
-func NewLRUCache(size int) (*LRUCache, error) {
+// If you want to compress the entries before storing them the marshal and unmarshal functions must be provided
+// If the compression.Engine is nil the marshal and unmarshal functions are not used
+func NewLRUCache(
+	size int,
+	marshal func(value interface{}) ([]byte, error),
+	unmarshal func(b []byte, value *interface{}) error,
+	compressionEngine *compression.Engine,
+) (*LRUCache, error) {
 	lruHashicorp, err := lru.New(size)
 	if err != nil {
 		return nil, err
 	}
 	return &LRUCache{
-		lru: lruHashicorp,
+		lru:               lruHashicorp,
+		marshal:           marshal,
+		unmarshal:         unmarshal,
+		compressionEngine: compressionEngine,
+		logger:            DummyLogger{},
+	}, nil
+}
+
+func NewLRUCacheWithLogger(
+	size int,
+	marshal func(value interface{}) ([]byte, error),
+	unmarshal func(b []byte, value *interface{}) error,
+	logger Logger,
+	compressionEngine *compression.Engine,
+) (*LRUCache, error) {
+	lruHashicorp, err := lru.New(size)
+	if err != nil {
+		return nil, err
+	}
+	return &LRUCache{
+		lru:               lruHashicorp,
+		marshal:           marshal,
+		unmarshal:         unmarshal,
+		compressionEngine: compressionEngine,
+		logger:            logger,
 	}, nil
 }
 
@@ -27,7 +65,34 @@ func (lc *LRUCache) Get(key string) (interface{}, error) {
 	if !found {
 		return nil, ErrNotFound
 	}
-	return value, nil
+
+	if lc.compressionEngine == nil {
+		return value, nil
+	}
+
+	output, err := lc.decompress(key, value)
+	if err != nil {
+		lc.logger.Error("lru: error decompressing data: ", err)
+	}
+	return output, err
+}
+
+func (lc *LRUCache) decompress(key string, value interface{}) (interface{}, error) {
+	byteValue, ok := value.([]byte)
+	if !ok {
+		lc.Delete(key)
+		return nil, fmt.Errorf("data in cache are corrupted")
+	}
+
+	input, err := lc.compressionEngine.Decompress(byteValue)
+	if err != nil {
+		lc.Delete(key)
+		return nil, err
+	}
+
+	var result interface{}
+	lc.unmarshal(input, &result)
+	return result, nil
 }
 
 // Peek gets a value by given key and does not change it's "lruness"
@@ -36,12 +101,36 @@ func (lc *LRUCache) Peek(key string) (interface{}, error) {
 	if !found {
 		return nil, ErrNotFound
 	}
-	return value, nil
+	if lc.compressionEngine == nil {
+		return value, nil
+	}
+
+	output, err := lc.decompress(key, value)
+	if err != nil {
+		lc.logger.Error("lru: error decompressing data: ", err)
+	}
+	return output, err
 }
 
 // Set stores given key-value pair into cache
 func (lc *LRUCache) Set(key string, value interface{}) error {
-	lc.lru.Add(key, value)
+	if lc.compressionEngine == nil {
+		lc.lru.Add(key, value)
+		return nil
+	}
+
+	marshalledValue, err := lc.marshal(value)
+	if err != nil {
+		lc.logger.Error("lru: error marshaling data: ", err)
+		return err
+	}
+
+	input, err := lc.compressionEngine.Compress(marshalledValue)
+	if err != nil {
+		lc.logger.Error("lru: error compressing data: ", err)
+		return err
+	}
+	lc.lru.Add(key, input)
 	return nil
 }
 
