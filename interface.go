@@ -132,7 +132,7 @@ func (c *Cache) DeleteRegExp(pattern string) error {
 	return nil
 }
 
-// CountRecords counts all keys matching the supplied regexp
+// CountRegExp counts all keys matching the supplied regexp
 func (c *Cache) CountRegExp(pattern string) (int, error) {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
