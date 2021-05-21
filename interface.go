@@ -110,8 +110,8 @@ func (c *Cache) DeletePredicate(pred Predicate) (int, error) {
 			if err := c.Delete(key); err != nil {
 				return count, err
 			}
+			count++
 		}
-		count++
 	}
 
 	return count, nil
