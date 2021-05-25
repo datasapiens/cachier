@@ -32,6 +32,8 @@ var (
 	ErrNotFound = errors.New("Key not found")
 )
 
+type Predicate func(string) bool
+
 // CacheEngine is an interface for cache engine (e.g. in-memory cache or Redis Cache)
 type CacheEngine interface {
 	Get(key string) (interface{}, error)
@@ -94,42 +96,62 @@ func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) 
 	return value, err
 }
 
-// DeleteWithPrefix removes all keys that start with given prefix
-func (c *Cache) DeleteWithPrefix(prefix string) error {
+//DeletePredicate deletes all keys matching the supplied predicate, returns number of deleted keys
+func (c *Cache) DeletePredicate(pred Predicate) (int, error) {
+	count := 0
+
 	keys, err := c.Keys()
 	if err != nil {
-		return err
+		return count, err
 	}
+
 	for _, key := range keys {
-		if strings.HasPrefix(key, prefix) {
+		if pred(key) {
 			if err := c.Delete(key); err != nil {
-				return err
+				return count, err
 			}
+			count++
 		}
 	}
-	return nil
+
+	return count, nil
 }
 
-// DeleteRegExp deletes all keys matching the supplied regexp
-func (c *Cache) DeleteRegExp(pattern string) error {
+// DeleteWithPrefix removes all keys that start with given prefix, returns number of deleted keys
+func (c *Cache) DeleteWithPrefix(prefix string) (int, error) {
+	pred := func(s string) bool {
+		return strings.HasPrefix(s, prefix)
+	}
+
+	return c.DeletePredicate(pred)
+}
+
+// DeleteRegExp deletes all keys matching the supplied regexp, returns number of deleted keys
+func (c *Cache) DeleteRegExp(pattern string) (int, error) {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
+	return c.DeletePredicate(re.MatchString)
+}
+
+// CountPredicate counts cache keys satisfying the given predicate
+func (c *Cache) CountPredicate(pred Predicate) (int, error) {
 	keys, err := c.Keys()
 	if err != nil {
-		return err
+		return 0, err
 	}
 
+	count := 0
+
 	for _, key := range keys {
-		if re.MatchString(key) {
-			if err := c.Delete(key); err != nil {
-				return err
-			}
+		if pred(key) {
+			count++
 		}
 	}
-	return nil
+
+	return count, nil
 }
 
 // CountRegExp counts all keys matching the supplied regexp
@@ -139,17 +161,5 @@ func (c *Cache) CountRegExp(pattern string) (int, error) {
 		return 0, err
 	}
 
-	keys, err := c.Keys()
-	if err != nil {
-		return 0, err
-	}
-
-	count := 0
-
-	for _, key := range keys {
-		if re.MatchString(key) {
-			count++
-		}
-	}
-	return count, nil
+	return c.CountPredicate(re.MatchString)
 }
