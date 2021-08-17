@@ -32,6 +32,7 @@ var (
 	ErrNotFound = errors.New("Key not found")
 )
 
+// Predicate evaluates a condition on the input string
 type Predicate func(string) bool
 
 // CacheEngine is an interface for cache engine (e.g. in-memory cache or Redis Cache)
@@ -51,23 +52,41 @@ type Cache struct {
 	computeLocks sync.Map
 }
 
+type lock struct {
+	key   string
+	mutex *sync.Mutex
+}
+
 // MakeCache creates cache with provided engine
 func MakeCache(engine CacheEngine) *Cache {
 	return &Cache{CacheEngine: engine}
+}
+
+func (c *Cache) lockKey(key string) lock {
+	value, _ := c.computeLocks.LoadOrStore(key, &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+	mutex.Lock()
+
+	return lock{
+		key:   key,
+		mutex: mutex,
+	}
+}
+
+func (c *Cache) unlock(l lock) {
+	c.computeLocks.Delete(l.key)
+	l.mutex.Unlock()
 }
 
 // GetOrCompute tries to get value from cache.
 // If not found, it computes the value using provided evaluator function and stores it into cache.
 // In case of other errors the value is evaluated but not stored in the cache.
 func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) (interface{}, error) {
-	value, _ := c.computeLocks.LoadOrStore(key, &sync.Mutex{})
-	mutex := value.(*sync.Mutex)
-	mutex.Lock()
+	lock := c.lockKey(key)
 
 	value, err := c.Get(key)
 	if err == nil {
-		c.computeLocks.Delete(key)
-		mutex.Unlock()
+		c.unlock(lock)
 		return value, nil
 	}
 
@@ -80,8 +99,7 @@ func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) 
 			go func() {
 				// Set key to cache in gorutine
 				c.Set(key, value)
-				c.computeLocks.Delete(key)
-				mutex.Unlock()
+				c.unlock(lock)
 			}()
 			return value, nil
 		}
@@ -91,8 +109,85 @@ func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) 
 		err = evaluatorErr
 	}
 
-	c.computeLocks.Delete(key)
-	mutex.Unlock()
+	c.unlock(lock)
+	return value, err
+}
+
+// GetIndirect gets a key value following any intermediary links
+func (c *Cache) GetIndirect(key string, linkResolver func(interface{}) string) (interface{}, error) {
+	value, err := c.Get(key)
+	if err != nil {
+		return nil, err
+	}
+
+	if linkResolver != nil {
+		if link := linkResolver(value); len(link) > 0 && link != key {
+			return c.GetIndirect(link, linkResolver)
+		}
+	}
+
+	return value, nil
+}
+
+// SetIndirect sets cache key including intermediary links
+func (c *Cache) SetIndirect(key string, value interface{}, linkResolver func(interface{}) string, linkGenerator func(interface{}) interface{}) error {
+	if linkGenerator != nil && linkResolver != nil {
+		if linkValue := linkGenerator(value); linkValue != nil {
+			link := linkResolver(linkValue)
+
+			if err := c.Set(key, linkValue); err != nil {
+				return err
+			}
+
+			return c.Set(link, value)
+		}
+	}
+
+	return c.Set(key, value)
+}
+
+// GetOrComputeEx tries to get value from cache.
+// If not found, it computes the value using provided evaluator function and stores it into cache.
+// In case of other errors the value is evaluated but not stored in the cache.
+// Additional parameters (can be nil):
+// validator - validates cache records, on false evaluator will be run again (new results will not be validated)
+// linkResolver - checks if cached value is a link and returns the key it's pointing to
+// linkGenerator - generates intermediate link value if needed when a new record is inserted
+// writeApprover - decides if new value is to be written in the cache
+func (c *Cache) GetOrComputeEx(key string, evaluator func() (interface{}, error), validator func(interface{}) bool, linkResolver func(interface{}) string, linkGenerator func(interface{}) interface{}, writeApprover func(interface{}) bool) (interface{}, error) {
+	lock := c.lockKey(key)
+
+	value, err := c.GetIndirect(key, linkResolver)
+	if err == nil && (validator == nil || validator(value)) {
+		c.unlock(lock)
+		return value, nil
+	}
+
+	value, evaluatorErr := evaluator()
+
+	if evaluatorErr == nil {
+		// value evaluted correctly
+		if err == ErrNotFound {
+			if writeApprover == nil || writeApprover(value) {
+				// Key not found in cache
+				go func() {
+					// Set key to cache in gorutine
+					c.SetIndirect(key, value, linkResolver, linkGenerator)
+					c.unlock(lock)
+				}()
+			} else {
+				c.unlock(lock)
+			}
+
+			return value, nil
+		}
+	} else {
+		// evalutation error
+		value = nil
+		err = evaluatorErr
+	}
+
+	c.unlock(lock)
 	return value, err
 }
 
