@@ -170,14 +170,9 @@ func (c *Cache) GetOrComputeEx(key string, evaluator func() (interface{}, error)
 		if err == ErrNotFound {
 			if writeApprover == nil || writeApprover(value) {
 				// Key not found in cache
-				go func() {
-					// Set key to cache in gorutine
-					c.SetIndirect(key, value, linkResolver, linkGenerator)
-					c.unlock(lock)
-				}()
-			} else {
-				c.unlock(lock)
+				c.SetIndirect(key, value, linkResolver, linkGenerator)
 			}
+			c.unlock(lock)
 
 			return value, nil
 		}
