@@ -124,7 +124,7 @@ func TestCompressionWithProvider(t *testing.T) {
 	// two compression method should results diffrent size of compressed input
 	assert.True(t, len(output) != len(output2))
 
-	decompressedOutput, err := engine.Decompress(output2)
+	decompressedOutput, err := engine.Decompress(output)
 	require.Nil(t, err)
 	assert.Equal(t, len(input), len(decompressedOutput))
 	assert.Equal(t, input, decompressedOutput)
