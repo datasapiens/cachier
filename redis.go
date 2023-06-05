@@ -2,6 +2,7 @@ package cachier
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -28,7 +29,6 @@ func (d DummyLogger) Warn(...interface{}) {}
 // Print does nothing
 func (d DummyLogger) Print(...interface{}) {}
 
-//
 // RedisCache implements cachier.CacheTTL interface using redis storage
 type RedisCache struct {
 	redisClient       *redis.Client
@@ -84,7 +84,14 @@ func NewRedisCacheWithLogger(
 }
 
 // Get gets a cached value by key
-func (rc *RedisCache) Get(key string) (interface{}, error) {
+func (rc *RedisCache) Get(key string) (v interface{}, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+			v = nil
+		}
+	}()
+
 	rc.logger.Print("redis get " + rc.keyPrefix + key)
 	value, err := rc.redisClient.Get(ctx, rc.keyPrefix+key).Result()
 
@@ -119,7 +126,14 @@ func (rc *RedisCache) Peek(key string) (interface{}, error) {
 }
 
 // Set stores a key-value pair into cache
-func (rc *RedisCache) Set(key string, value interface{}) error {
+func (rc *RedisCache) Set(key string, value interface{}) (err error) {
+
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+
 	marshalledValue, err := rc.marshal(value)
 	if err != nil {
 		rc.logger.Error("redis: error marshaling data: ", err)
