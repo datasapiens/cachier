@@ -60,7 +60,13 @@ func NewLRUCacheWithLogger(
 }
 
 // Get gets a value by given key
-func (lc *LRUCache) Get(key string) (interface{}, error) {
+func (lc *LRUCache) Get(key string) (v interface{}, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+			v = nil
+		}
+	}()
 	value, found := lc.lru.Get(key)
 	if !found {
 		return nil, ErrNotFound
@@ -96,7 +102,13 @@ func (lc *LRUCache) decompress(key string, value interface{}) (interface{}, erro
 }
 
 // Peek gets a value by given key and does not change it's "lruness"
-func (lc *LRUCache) Peek(key string) (interface{}, error) {
+func (lc *LRUCache) Peek(key string) (v interface{}, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+			v = nil
+		}
+	}()
 	value, found := lc.lru.Peek(key)
 	if !found {
 		return nil, ErrNotFound
@@ -113,7 +125,12 @@ func (lc *LRUCache) Peek(key string) (interface{}, error) {
 }
 
 // Set stores given key-value pair into cache
-func (lc *LRUCache) Set(key string, value interface{}) error {
+func (lc *LRUCache) Set(key string, value interface{}) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
 	if lc.compressionEngine == nil {
 		lc.lru.Add(key, value)
 		return nil
