@@ -17,12 +17,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func InitLRUCache() *Cache {
+func InitLRUCache[Meta any, Data any]() *Cache[Meta, Data] {
 	lc, err := NewLRUCache(300, nil, nil, nil)
 	if err != nil {
 		panic(err)
 	}
-	return MakeCache(lc)
+	return MakeCache[Meta, Data](lc)
 }
 
 func InitRedis() (*redis.Client, error) {
@@ -41,7 +41,7 @@ func InitRedis() (*redis.Client, error) {
 	return redisClient, err
 }
 
-func InitRedisCache() (*Cache, error) {
+func InitRedisCache[Meta any, Data any]() (*Cache[Meta, Data], error) {
 	redisClient, err := InitRedis()
 
 	rc := NewRedisCache(
@@ -57,7 +57,7 @@ func InitRedisCache() (*Cache, error) {
 		nil,
 	)
 
-	return MakeCache(rc), err
+	return MakeCache[Meta, Data](rc), err
 }
 
 func RandStringRunes(n int) string {
@@ -69,7 +69,7 @@ func RandStringRunes(n int) string {
 	return string(b)
 }
 
-func SetGet(c *Cache, t *testing.T) {
+func SetGet[Meta any, Data any](c *Cache[Meta, Data], t *testing.T) {
 	key := RandStringRunes(10)
 	value := rand.ExpFloat64()
 
@@ -87,7 +87,7 @@ func SetGet(c *Cache, t *testing.T) {
 	}
 }
 
-func dosCache(c *Cache, t *testing.T, n int) {
+func dosCache[Meta any, Data any](c *Cache[Meta, Data], t *testing.T, n int) {
 	wg := sync.WaitGroup{}
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -100,12 +100,12 @@ func dosCache(c *Cache, t *testing.T, n int) {
 }
 
 func TestLRUCache(t *testing.T) {
-	c := InitLRUCache()
+	c := InitLRUCache[string, string]()
 	dosCache(c, t, 300)
 }
 
 func TestRedisCache(t *testing.T) {
-	c, err := InitRedisCache()
+	c, err := InitRedisCache[string, string]()
 	if err != nil {
 		t.Skipf("skipping because of redis error: %s", err.Error())
 	}
@@ -113,14 +113,14 @@ func TestRedisCache(t *testing.T) {
 }
 
 func TestCacheWithSubCache(t *testing.T) {
-	lru := InitLRUCache()
-	rc, err := InitRedisCache()
+	lru := InitLRUCache[string, string]()
+	rc, err := InitRedisCache[string, string]()
 
 	if err != nil {
 		t.Skipf("skipping because of redis error: %s", err.Error())
 	}
 
-	c := MakeCache(&CacheWithSubcache{
+	c := MakeCache[string, string](&CacheWithSubcache[string, string]{
 		Cache:    rc,
 		Subcache: lru,
 	})
@@ -149,7 +149,7 @@ func TestRedisCacheWithCompressionJSON(t *testing.T) {
 		engine,
 	)
 
-	cache := MakeCache(rc)
+	cache := MakeCache[string, string](rc)
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
 	input := fmt.Sprintf("{\"key\":\"%s\"", string(r))
@@ -209,7 +209,7 @@ func TestRedisCacheWithCompressionGOB(t *testing.T) {
 		engine,
 	)
 
-	cache := MakeCache(rc)
+	cache := MakeCache[string, string](rc)
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
 	key := "hello:world:gob"
@@ -242,7 +242,7 @@ func TestLRUCacheWithCompressionJSON(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	cache := MakeCache(lc)
+	cache := MakeCache[string, string](lc)
 
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
@@ -293,7 +293,7 @@ func TestLRUCacheWithCompressionGOB(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	cache := MakeCache(lc)
+	cache := MakeCache[string, string](lc)
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
 	key := "hello:world:gob"

@@ -47,7 +47,7 @@ type CacheEngine interface {
 
 // Cache is an implementation of a cache (key-value store).
 // It needs to be provided with cache engine.
-type Cache struct {
+type Cache[Meta any, Data any] struct {
 	CacheEngine
 	computeLocks sync.Map
 }
@@ -58,11 +58,11 @@ type lock struct {
 }
 
 // MakeCache creates cache with provided engine
-func MakeCache(engine CacheEngine) *Cache {
-	return &Cache{CacheEngine: engine}
+func MakeCache[Meta any, Data any](engine CacheEngine) *Cache[Meta, Data] {
+	return &Cache[Meta, Data]{CacheEngine: engine}
 }
 
-func (c *Cache) lockKey(key string) lock {
+func (c *Cache[M, D]) lockKey(key string) lock {
 	value, _ := c.computeLocks.LoadOrStore(key, &sync.Mutex{})
 	mutex := value.(*sync.Mutex)
 	mutex.Lock()
@@ -73,7 +73,7 @@ func (c *Cache) lockKey(key string) lock {
 	}
 }
 
-func (c *Cache) unlock(l lock) {
+func (c *Cache[M, D]) unlock(l lock) {
 	c.computeLocks.Delete(l.key)
 	l.mutex.Unlock()
 }
@@ -81,16 +81,21 @@ func (c *Cache) unlock(l lock) {
 // GetOrCompute tries to get value from cache.
 // If not found, it computes the value using provided evaluator function and stores it into cache.
 // In case of other errors the value is evaluated but not stored in the cache.
-func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) (interface{}, error) {
+func (c *Cache[M, D]) GetOrCompute(key string, evaluator func() (*D, error)) (*D, error) {
 	lock := c.lockKey(key)
 
 	value, err := c.Get(key)
 	if err == nil {
 		c.unlock(lock)
-		return value, nil
+		typedValue, ok := value.(D)
+		if ok {
+			return &typedValue, nil
+		} else {
+			err = ErrNotFound
+		}
 	}
 
-	value, evaluatorErr := evaluator()
+	calculatedValue, evaluatorErr := evaluator()
 
 	if evaluatorErr == nil {
 		// value evaluted correctly
@@ -98,39 +103,50 @@ func (c *Cache) GetOrCompute(key string, evaluator func() (interface{}, error)) 
 			// Key not found on cache
 			go func() {
 				// Set key to cache in gorutine
-				c.Set(key, value)
+				c.Set(key, calculatedValue)
 				c.unlock(lock)
 			}()
-			return value, nil
+			return calculatedValue, nil
 		}
 	} else {
 		// evalutation error
-		value = nil
+		calculatedValue = nil
 		err = evaluatorErr
 	}
 
 	c.unlock(lock)
-	return value, err
+	return calculatedValue, err
 }
 
 // GetIndirect gets a key value following any intermediary links
-func (c *Cache) GetIndirect(key string, linkResolver func(interface{}) string) (interface{}, error) {
+func (c *Cache[M, D]) GetIndirect(key string, linkResolver func(interface{}) string) (*D, error) {
+	lock := c.lockKey(key)
+
 	value, err := c.Get(key)
 	if err != nil {
+		c.unlock(lock)
 		return nil, err
 	}
 
 	if linkResolver != nil {
 		if link := linkResolver(value); len(link) > 0 && link != key {
+			c.unlock(lock)
 			return c.GetIndirect(link, linkResolver)
 		}
 	}
 
-	return value, nil
+	c.unlock(lock)
+	typedValue, ok := value.(D)
+
+	if !ok {
+		return nil, ErrNotFound
+	}
+
+	return &typedValue, nil
 }
 
 // SetIndirect sets cache key including intermediary links
-func (c *Cache) SetIndirect(key string, value interface{}, linkResolver func(interface{}) string, linkGenerator func(interface{}) interface{}) error {
+func (c *Cache[M, D]) SetIndirect(key string, value *D, linkResolver func(interface{}) string, linkGenerator func(interface{}) interface{}) error {
 	if linkGenerator != nil && linkResolver != nil {
 		if linkValue := linkGenerator(value); linkValue != nil {
 			link := linkResolver(linkValue)
@@ -154,11 +170,11 @@ func (c *Cache) SetIndirect(key string, value interface{}, linkResolver func(int
 // linkResolver - checks if cached value is a link and returns the key it's pointing to
 // linkGenerator - generates intermediate link value if needed when a new record is inserted
 // writeApprover - decides if new value is to be written in the cache
-func (c *Cache) GetOrComputeEx(key string, evaluator func() (interface{}, error), validator func(interface{}) bool, linkResolver func(interface{}) string, linkGenerator func(interface{}) interface{}, writeApprover func(interface{}) bool) (interface{}, error) {
+func (c *Cache[M, D]) GetOrComputeEx(key string, evaluator func() (*D, error), validator func(D) bool, linkResolver func(interface{}) string, linkGenerator func(interface{}) interface{}, writeApprover func(interface{}) bool) (*D, error) {
 	lock := c.lockKey(key)
 
 	value, err := c.GetIndirect(key, linkResolver)
-	if err == nil && (validator == nil || validator(value)) {
+	if err == nil && (validator == nil || validator(*value)) {
 		c.unlock(lock)
 		return value, nil
 	}
@@ -186,8 +202,8 @@ func (c *Cache) GetOrComputeEx(key string, evaluator func() (interface{}, error)
 	return value, err
 }
 
-//DeletePredicate deletes all keys matching the supplied predicate, returns number of deleted keys
-func (c *Cache) DeletePredicate(pred Predicate) (int, error) {
+// DeletePredicate deletes all keys matching the supplied predicate, returns number of deleted keys
+func (c *Cache[M, D]) DeletePredicate(pred Predicate) (int, error) {
 	count := 0
 
 	keys, err := c.Keys()
@@ -208,7 +224,7 @@ func (c *Cache) DeletePredicate(pred Predicate) (int, error) {
 }
 
 // DeleteWithPrefix removes all keys that start with given prefix, returns number of deleted keys
-func (c *Cache) DeleteWithPrefix(prefix string) (int, error) {
+func (c *Cache[M, D]) DeleteWithPrefix(prefix string) (int, error) {
 	pred := func(s string) bool {
 		return strings.HasPrefix(s, prefix)
 	}
@@ -217,7 +233,7 @@ func (c *Cache) DeleteWithPrefix(prefix string) (int, error) {
 }
 
 // DeleteRegExp deletes all keys matching the supplied regexp, returns number of deleted keys
-func (c *Cache) DeleteRegExp(pattern string) (int, error) {
+func (c *Cache[M, D]) DeleteRegExp(pattern string) (int, error) {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return 0, err
@@ -227,7 +243,7 @@ func (c *Cache) DeleteRegExp(pattern string) (int, error) {
 }
 
 // CountPredicate counts cache keys satisfying the given predicate
-func (c *Cache) CountPredicate(pred Predicate) (int, error) {
+func (c *Cache[M, D]) CountPredicate(pred Predicate) (int, error) {
 	keys, err := c.Keys()
 	if err != nil {
 		return 0, err
@@ -245,7 +261,7 @@ func (c *Cache) CountPredicate(pred Predicate) (int, error) {
 }
 
 // CountRegExp counts all keys matching the supplied regexp
-func (c *Cache) CountRegExp(pattern string) (int, error) {
+func (c *Cache[M, D]) CountRegExp(pattern string) (int, error) {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return 0, err
