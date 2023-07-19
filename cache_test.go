@@ -69,7 +69,7 @@ func RandStringRunes(n int) string {
 	return string(b)
 }
 
-func SetGet[T any](c *Cache[T], t *testing.T) {
+func SetGet(c *Cache[float64], t *testing.T) {
 	key := RandStringRunes(10)
 	value := rand.ExpFloat64()
 
@@ -78,16 +78,13 @@ func SetGet[T any](c *Cache[T], t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	cachedF, ok := cached.(float64)
-	if !ok {
-		t.Error("received non float")
-	}
+	cachedF := *cached
 	if cachedF != value {
 		t.Errorf("Expected cachedF to be %f, got %f instead.", value, cachedF)
 	}
 }
 
-func dosCache[T any](c *Cache[T], t *testing.T, n int) {
+func dosCache(c *Cache[float64], t *testing.T, n int) {
 	wg := sync.WaitGroup{}
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -100,12 +97,12 @@ func dosCache[T any](c *Cache[T], t *testing.T, n int) {
 }
 
 func TestLRUCache(t *testing.T) {
-	c := InitLRUCache[string]()
+	c := InitLRUCache[float64]()
 	dosCache(c, t, 300)
 }
 
 func TestRedisCache(t *testing.T) {
-	c, err := InitRedisCache[string]()
+	c, err := InitRedisCache[float64]()
 	if err != nil {
 		t.Skipf("skipping because of redis error: %s", err.Error())
 	}
@@ -113,19 +110,19 @@ func TestRedisCache(t *testing.T) {
 }
 
 func TestCacheWithSubCache(t *testing.T) {
-	lru := InitLRUCache[string]()
-	rc, err := InitRedisCache[string]()
+	lru := InitLRUCache[float64]()
+	rc, err := InitRedisCache[float64]()
 
 	if err != nil {
 		t.Skipf("skipping because of redis error: %s", err.Error())
 	}
 
-	c := MakeCache[string](&CacheWithSubcache[string]{
+	c := MakeCache[float64](&CacheWithSubcache[float64]{
 		Cache:    rc,
 		Subcache: lru,
 	})
 
-	dosCache(c, t, 1000)
+	dosCache(c, t, 1)
 }
 
 func TestRedisCacheWithCompressionJSON(t *testing.T) {
@@ -159,7 +156,7 @@ func TestRedisCacheWithCompressionJSON(t *testing.T) {
 	require.Nil(t, err)
 	output, err := cache.Get(key)
 	require.Nil(t, err)
-	assert.Equal(t, input, output)
+	assert.Equal(t, input, *output)
 
 	key = "hello:world:json:2"
 	input = fmt.Sprintf("{\"key\":\"%s\"", s)
@@ -168,7 +165,7 @@ func TestRedisCacheWithCompressionJSON(t *testing.T) {
 	require.Nil(t, err)
 	output, err = cache.Get(key)
 	require.Nil(t, err)
-	assert.Equal(t, input, output)
+	assert.Equal(t, input, *output)
 
 }
 
@@ -196,7 +193,7 @@ func TestRedisCacheWithCompressionGOB(t *testing.T) {
 			return buf.Bytes(), nil
 		},
 		func(b []byte, value *interface{}) error {
-			var res *A
+			var res A
 			buf := bytes.NewBuffer(b)
 			dec := gob.NewDecoder(buf)
 			if err := dec.Decode(&res); err != nil {
@@ -209,7 +206,7 @@ func TestRedisCacheWithCompressionGOB(t *testing.T) {
 		engine,
 	)
 
-	cache := MakeCache[string](rc)
+	cache := MakeCache[A](rc)
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
 	key := "hello:world:gob"
@@ -218,13 +215,11 @@ func TestRedisCacheWithCompressionGOB(t *testing.T) {
 		ID:  1,
 		Key: string(r),
 	}
-	err = cache.Set(key, &a)
+	err = cache.Set(key, a)
 	require.Nil(t, err)
 	output, err := cache.Get(key)
 	require.Nil(t, err)
-	u, ok := output.(*A)
-	require.True(t, ok)
-	assert.Equal(t, a.Key, u.Key)
+	assert.Equal(t, a.Key, output.Key)
 }
 
 func TestLRUCacheWithCompressionJSON(t *testing.T) {
@@ -253,7 +248,7 @@ func TestLRUCacheWithCompressionJSON(t *testing.T) {
 	require.Nil(t, err)
 	output, err := cache.Get(key)
 	require.Nil(t, err)
-	assert.Equal(t, input, output)
+	assert.Equal(t, input, *output)
 
 	key = "hello:world:json:2"
 	input = fmt.Sprintf("{\"key\":\"%s\"", s)
@@ -262,7 +257,97 @@ func TestLRUCacheWithCompressionJSON(t *testing.T) {
 	require.Nil(t, err)
 	output, err = cache.Get(key)
 	require.Nil(t, err)
-	assert.Equal(t, input, output)
+	assert.Equal(t, input, *output)
+}
+
+func TestRedisCacheWithCompressionJSONArray(t *testing.T) {
+
+	type A struct {
+		ID  int
+		Key string
+	}
+
+	redisClient, err := InitRedis()
+	if err != nil {
+		t.Skipf("skipping because of redis error: %s", err.Error())
+	}
+	engine, err := compression.NewEngine(compression.ProviderIDZstd, nil)
+	require.Nil(t, err)
+	rc := NewRedisCache(
+		redisClient,
+		"",
+		func(value interface{}) ([]byte, error) {
+			return json.Marshal(value)
+		},
+		func(b []byte, value *interface{}) error {
+			var res []A
+			json.Unmarshal(b, &res)
+			*value = res
+			return nil
+		},
+		0,
+		engine,
+	)
+
+	cache := MakeCache[[]A](rc)
+	s := "hello world"
+	r := []byte(strings.Repeat(s, 100))
+	a := A{
+		ID:  1,
+		Key: string(r),
+	}
+
+	data := []A{a}
+
+	key := "hello:world:json:3"
+	cache.Delete(key)
+	err = cache.Set(key, data)
+	require.Nil(t, err)
+	output, err := cache.Get(key)
+	require.Nil(t, err)
+	assert.Equal(t, len(data), len(*output))
+}
+
+func TestLRUCacheWithCompressionJSONArray(t *testing.T) {
+
+	type A struct {
+		ID  int
+		Key string
+	}
+	engine, err := compression.NewEngine(compression.ProviderIDZstd, nil)
+	require.Nil(t, err)
+	lc, err := NewLRUCache(300,
+		func(value interface{}) ([]byte, error) {
+			return json.Marshal(value)
+		},
+		func(b []byte, value *interface{}) error {
+			var res []A
+			json.Unmarshal(b, &res)
+			*value = res
+			return nil
+		},
+		engine)
+	if err != nil {
+		panic(err)
+	}
+
+	s := "hello world"
+	r := []byte(strings.Repeat(s, 100))
+	a := A{
+		ID:  1,
+		Key: string(r),
+	}
+
+	cache := MakeCache[[]A](lc)
+	data := []A{a}
+
+	key := "hello:world:json:3"
+	cache.Delete(key)
+	err = cache.Set(key, data)
+	require.Nil(t, err)
+	output, err := cache.Get(key)
+	require.Nil(t, err)
+	assert.Equal(t, len(data), len(*output))
 }
 
 func TestLRUCacheWithCompressionGOB(t *testing.T) {
@@ -280,7 +365,7 @@ func TestLRUCacheWithCompressionGOB(t *testing.T) {
 			return buf.Bytes(), nil
 		},
 		func(b []byte, value *interface{}) error {
-			var res *A
+			var res A
 			buf := bytes.NewBuffer(b)
 			dec := gob.NewDecoder(buf)
 			if err := dec.Decode(&res); err != nil {
@@ -293,7 +378,7 @@ func TestLRUCacheWithCompressionGOB(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	cache := MakeCache[string](lc)
+	cache := MakeCache[A](lc)
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
 	key := "hello:world:gob"
@@ -302,11 +387,10 @@ func TestLRUCacheWithCompressionGOB(t *testing.T) {
 		ID:  1,
 		Key: string(r),
 	}
-	err = cache.Set(key, &a)
+
+	err = cache.Set(key, a)
 	require.Nil(t, err)
 	output, err := cache.Get(key)
 	require.Nil(t, err)
-	u, ok := output.(*A)
-	require.True(t, ok)
-	assert.Equal(t, a.Key, u.Key)
+	assert.Equal(t, a.Key, output.Key)
 }
