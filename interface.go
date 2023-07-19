@@ -22,6 +22,7 @@ package cachier
 
 import (
 	"errors"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -94,7 +95,7 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 		// Key not found on cache
 		go func() {
 			// Set key to cache in gorutine
-			c.Set(key, *calculatedValue)
+			c.Set(key, calculatedValue)
 		}()
 		return calculatedValue, nil
 	} else {
@@ -106,7 +107,7 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 }
 
 // Set stores a key-value pair into cache
-func (c *Cache[T]) Set(key string, value T) error {
+func (c *Cache[T]) Set(key string, value *T) error {
 	lock := c.lockKey(key)
 	defer c.unlock(lock)
 	return c.engine.Set(key, value)
@@ -118,11 +119,18 @@ func (c *Cache[T]) Get(key string) (*T, error) {
 	defer c.unlock(lock)
 	value, err := c.engine.Get(key)
 	if err == nil {
-		typedValue, ok := value.(T)
-		if ok {
-			return &typedValue, nil
+		if reflect.ValueOf(value).Kind() == reflect.Ptr {
+			typedValue, ok := value.(*T)
+			if !ok {
+				return nil, ErrWrongDataType
+			}
+			return typedValue, nil
 		} else {
-			err = ErrNotFound
+			typedValue, ok := value.(T)
+			if !ok {
+				return nil, ErrWrongDataType
+			}
+			return &typedValue, nil
 		}
 	}
 
@@ -151,7 +159,7 @@ func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(interface
 		if linkValue := linkGenerator(value); linkValue != nil {
 			link := linkResolver(linkValue)
 
-			typedValue, ok := linkValue.(T)
+			typedValue, ok := linkValue.(*T)
 			if !ok {
 				return ErrWrongDataType
 			}
@@ -160,11 +168,11 @@ func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(interface
 				return err
 			}
 
-			return c.Set(link, *value)
+			return c.Set(link, value)
 		}
 	}
 
-	return c.Set(key, *value)
+	return c.Set(key, value)
 }
 
 // GetOrComputeEx tries to get value from cache.

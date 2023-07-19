@@ -1,5 +1,7 @@
 package cachier
 
+import "reflect"
+
 // CacheWithSubcache is a Cache with L1 subcache.
 type CacheWithSubcache[T any] struct {
 	Cache    *Cache[T]
@@ -26,10 +28,21 @@ func (cs *CacheWithSubcache[T]) Peek(key string) (interface{}, error) {
 
 // Set stores a key-value pair into cache
 func (cs *CacheWithSubcache[T]) Set(key string, value interface{}) error {
-	typedValue, ok := value.(T)
 
-	if !ok {
-		return ErrWrongDataType
+	var typedValue *T
+	if reflect.ValueOf(value).Kind() == reflect.Ptr {
+		value, ok := value.(*T)
+		if !ok {
+			return ErrWrongDataType
+		}
+		typedValue = value
+
+	} else {
+		value, ok := value.(T)
+		if !ok {
+			return ErrWrongDataType
+		}
+		typedValue = &value
 	}
 
 	if err := cs.Subcache.Set(key, typedValue); err != nil {

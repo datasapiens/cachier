@@ -73,7 +73,7 @@ func SetGet(c *Cache[float64], t *testing.T) {
 	key := RandStringRunes(10)
 	value := rand.ExpFloat64()
 
-	c.Set(key, value)
+	c.Set(key, &value)
 	cached, err := c.Get(key)
 	if err != nil {
 		t.Error(err)
@@ -152,7 +152,7 @@ func TestRedisCacheWithCompressionJSON(t *testing.T) {
 	input := fmt.Sprintf("{\"key\":\"%s\"", string(r))
 	key := "hello:world:json:1"
 	cache.Delete(key)
-	err = cache.Set(key, input)
+	err = cache.Set(key, &input)
 	require.Nil(t, err)
 	output, err := cache.Get(key)
 	require.Nil(t, err)
@@ -161,7 +161,7 @@ func TestRedisCacheWithCompressionJSON(t *testing.T) {
 	key = "hello:world:json:2"
 	input = fmt.Sprintf("{\"key\":\"%s\"", s)
 	cache.Delete(key)
-	err = cache.Set(key, input)
+	err = cache.Set(key, &input)
 	require.Nil(t, err)
 	output, err = cache.Get(key)
 	require.Nil(t, err)
@@ -215,7 +215,7 @@ func TestRedisCacheWithCompressionGOB(t *testing.T) {
 		ID:  1,
 		Key: string(r),
 	}
-	err = cache.Set(key, a)
+	err = cache.Set(key, &a)
 	require.Nil(t, err)
 	output, err := cache.Get(key)
 	require.Nil(t, err)
@@ -244,7 +244,7 @@ func TestLRUCacheWithCompressionJSON(t *testing.T) {
 	input := fmt.Sprintf("{\"key\":\"%s\"", string(r))
 	key := "hello:world:json:1"
 	cache.Delete(key)
-	err = cache.Set(key, input)
+	err = cache.Set(key, &input)
 	require.Nil(t, err)
 	output, err := cache.Get(key)
 	require.Nil(t, err)
@@ -253,7 +253,7 @@ func TestLRUCacheWithCompressionJSON(t *testing.T) {
 	key = "hello:world:json:2"
 	input = fmt.Sprintf("{\"key\":\"%s\"", s)
 	cache.Delete(key)
-	err = cache.Set(key, input)
+	err = cache.Set(key, &input)
 	require.Nil(t, err)
 	output, err = cache.Get(key)
 	require.Nil(t, err)
@@ -301,7 +301,7 @@ func TestRedisCacheWithCompressionJSONArray(t *testing.T) {
 
 	key := "hello:world:json:3"
 	cache.Delete(key)
-	err = cache.Set(key, data)
+	err = cache.Set(key, &data)
 	require.Nil(t, err)
 	output, err := cache.Get(key)
 	require.Nil(t, err)
@@ -343,7 +343,7 @@ func TestLRUCacheWithCompressionJSONArray(t *testing.T) {
 
 	key := "hello:world:json:3"
 	cache.Delete(key)
-	err = cache.Set(key, data)
+	err = cache.Set(key, &data)
 	require.Nil(t, err)
 	output, err := cache.Get(key)
 	require.Nil(t, err)
@@ -388,7 +388,7 @@ func TestLRUCacheWithCompressionGOB(t *testing.T) {
 		Key: string(r),
 	}
 
-	err = cache.Set(key, a)
+	err = cache.Set(key, &a)
 	require.Nil(t, err)
 	output, err := cache.Get(key)
 	require.Nil(t, err)
