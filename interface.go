@@ -138,7 +138,7 @@ func (c *Cache[T]) Get(key string) (*T, error) {
 }
 
 // GetIndirect gets a key value following any intermediary links
-func (c *Cache[T]) GetIndirect(key string, linkResolver func(interface{}) string) (*T, error) {
+func (c *Cache[T]) GetIndirect(key string, linkResolver func(*T) string) (*T, error) {
 	value, err := c.Get(key)
 	if err != nil {
 		return nil, err
@@ -154,17 +154,12 @@ func (c *Cache[T]) GetIndirect(key string, linkResolver func(interface{}) string
 }
 
 // SetIndirect sets cache key including intermediary links
-func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(interface{}) string, linkGenerator func(interface{}) interface{}) error {
+func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(*T) string, linkGenerator func(*T) *T) error {
 	if linkGenerator != nil && linkResolver != nil {
 		if linkValue := linkGenerator(value); linkValue != nil {
 			link := linkResolver(linkValue)
 
-			typedValue, ok := linkValue.(*T)
-			if !ok {
-				return ErrWrongDataType
-			}
-
-			if err := c.Set(key, typedValue); err != nil {
+			if err := c.Set(key, linkValue); err != nil {
 				return err
 			}
 
@@ -183,9 +178,9 @@ func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(interface
 // linkResolver - checks if cached value is a link and returns the key it's pointing to
 // linkGenerator - generates intermediate link value if needed when a new record is inserted
 // writeApprover - decides if new value is to be written in the cache
-func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), validator func(interface{}) bool, linkResolver func(interface{}) string, linkGenerator func(interface{}) interface{}, writeApprover func(interface{}) bool) (*T, error) {
+func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), validator func(*T) bool, linkResolver func(*T) string, linkGenerator func(*T) *T, writeApprover func(*T) bool) (*T, error) {
 	value, err := c.GetIndirect(key, linkResolver)
-	if err == nil && (validator == nil || validator(*value)) {
+	if err == nil && (validator == nil || validator(value)) {
 		return value, nil
 	}
 
