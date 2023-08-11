@@ -1,18 +1,24 @@
 package cachier
 
+import "reflect"
+
 // CacheWithSubcache is a Cache with L1 subcache.
-type CacheWithSubcache struct {
-	Cache    *Cache
-	Subcache *Cache
+type CacheWithSubcache[T any] struct {
+	Cache    *Cache[T]
+	Subcache *Cache[T]
 }
 
 // Get gets a cached value by key
-func (cs *CacheWithSubcache) Get(key string) (interface{}, error) {
-	return cs.Subcache.GetOrCompute(key, func() (interface{}, error) { return cs.Cache.Get(key) })
+func (cs *CacheWithSubcache[T]) Get(key string) (interface{}, error) {
+	value, err := cs.Subcache.GetOrCompute(key, func() (*T, error) {
+		return cs.Cache.Get(key)
+	})
+
+	return *value, err
 }
 
 // Peek gets a cached key value without side-effects (i.e. without adding to L1 cache)
-func (cs *CacheWithSubcache) Peek(key string) (interface{}, error) {
+func (cs *CacheWithSubcache[T]) Peek(key string) (interface{}, error) {
 	value, err := cs.Subcache.Peek(key)
 	if err == nil {
 		return value, err
@@ -21,15 +27,32 @@ func (cs *CacheWithSubcache) Peek(key string) (interface{}, error) {
 }
 
 // Set stores a key-value pair into cache
-func (cs *CacheWithSubcache) Set(key string, value interface{}) error {
-	if err := cs.Subcache.Set(key, value); err != nil {
+func (cs *CacheWithSubcache[T]) Set(key string, value interface{}) error {
+
+	var typedValue *T
+	if reflect.ValueOf(value).Kind() == reflect.Ptr {
+		value, ok := value.(*T)
+		if !ok {
+			return ErrWrongDataType
+		}
+		typedValue = value
+
+	} else {
+		value, ok := value.(T)
+		if !ok {
+			return ErrWrongDataType
+		}
+		typedValue = &value
+	}
+
+	if err := cs.Subcache.Set(key, typedValue); err != nil {
 		return err
 	}
-	return cs.Cache.Set(key, value)
+	return cs.Cache.Set(key, typedValue)
 }
 
 // Delete removes a key from cache
-func (cs *CacheWithSubcache) Delete(key string) error {
+func (cs *CacheWithSubcache[T]) Delete(key string) error {
 	if err := cs.Cache.Delete(key); err != nil {
 		return err
 	}
@@ -37,12 +60,12 @@ func (cs *CacheWithSubcache) Delete(key string) error {
 }
 
 // Keys returns a slice of all keys in the cache
-func (cs *CacheWithSubcache) Keys() ([]string, error) {
+func (cs *CacheWithSubcache[T]) Keys() ([]string, error) {
 	return cs.Cache.Keys()
 }
 
 // Purge removes all the records from the cache
-func (cs *CacheWithSubcache) Purge() error {
+func (cs *CacheWithSubcache[T]) Purge() error {
 	keys, err := cs.Keys()
 	if err != nil {
 		return err
