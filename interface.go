@@ -206,28 +206,28 @@ func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), vali
 }
 
 // DeletePredicate deletes all keys matching the supplied predicate, returns number of deleted keys
-func (c *Cache[T]) DeletePredicate(pred Predicate) (int, error) {
-	count := 0
+func (c *Cache[T]) DeletePredicate(pred Predicate) ([]string, error) {
+	removedKeys := make([]string, 0)
 
 	keys, err := c.Keys()
 	if err != nil {
-		return count, err
+		return nil, err
 	}
 
 	for _, key := range keys {
 		if pred(key) {
 			if err := c.engine.Delete(key); err != nil {
-				return count, err
+				return removedKeys, err
 			}
-			count++
+			removedKeys = append(removedKeys, key)
 		}
 	}
 
-	return count, nil
+	return removedKeys, nil
 }
 
 // DeleteWithPrefix removes all keys that start with given prefix, returns number of deleted keys
-func (c *Cache[T]) DeleteWithPrefix(prefix string) (int, error) {
+func (c *Cache[T]) DeleteWithPrefix(prefix string) ([]string, error) {
 	pred := func(s string) bool {
 		return strings.HasPrefix(s, prefix)
 	}
@@ -236,10 +236,10 @@ func (c *Cache[T]) DeleteWithPrefix(prefix string) (int, error) {
 }
 
 // DeleteRegExp deletes all keys matching the supplied regexp, returns number of deleted keys
-func (c *Cache[T]) DeleteRegExp(pattern string) (int, error) {
+func (c *Cache[T]) DeleteRegExp(pattern string) ([]string, error) {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	return c.DeletePredicate(re.MatchString)
