@@ -25,7 +25,8 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
-	"sync"
+
+	"github.com/datasapiens/cachier/utils"
 )
 
 // Errors
@@ -51,40 +52,23 @@ type CacheEngine interface {
 // It needs to be provided with cache engine.
 type Cache[T any] struct {
 	engine       CacheEngine
-	computeLocks sync.Map
-}
-
-type lock struct {
-	key   string
-	mutex *sync.Mutex
+	computeLocks utils.MutexMap
 }
 
 // MakeCache creates cache with provided engine
 func MakeCache[T any](engine CacheEngine) *Cache[T] {
-	return &Cache[T]{engine: engine}
-}
-
-func (c *Cache[T]) lockKey(key string) lock {
-	value, _ := c.computeLocks.LoadOrStore(key, &sync.Mutex{})
-	mutex := value.(*sync.Mutex)
-	mutex.Lock()
-
-	return lock{
-		key:   key,
-		mutex: mutex,
-	}
-}
-
-func (c *Cache[T]) unlock(l lock) {
-	c.computeLocks.Delete(l.key)
-	l.mutex.Unlock()
+	return &Cache[T]{
+		engine:       engine,
+		computeLocks: *utils.NewMutexMap()}
 }
 
 // GetOrCompute tries to get value from cache.
 // If not found, it computes the value using provided evaluator function and stores it into cache.
 // In case of other errors the value is evaluated but not stored in the cache.
 func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, error) {
-	value, err := c.Get(key)
+	c.computeLocks.Lock(key)
+	defer c.computeLocks.Unlock(key)
+	value, err := c.getNoLock(key)
 	if err == nil {
 		return value, nil
 	}
@@ -95,7 +79,7 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 		// Key not found on cache
 		go func() {
 			// Set key to cache in gorutine
-			c.Set(key, calculatedValue)
+			c.setNoLock(key, calculatedValue)
 		}()
 		return calculatedValue, nil
 	} else {
@@ -108,38 +92,23 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 
 // Set stores a key-value pair into cache
 func (c *Cache[T]) Set(key string, value *T) error {
-	lock := c.lockKey(key)
-	defer c.unlock(lock)
+	c.computeLocks.Lock(key)
+	defer c.computeLocks.Unlock(key)
 	return c.engine.Set(key, value)
 }
 
 // Get gets a cached value by key
 func (c *Cache[T]) Get(key string) (*T, error) {
-	lock := c.lockKey(key)
-	defer c.unlock(lock)
-	value, err := c.engine.Get(key)
-	if err == nil {
-		if reflect.ValueOf(value).Kind() == reflect.Ptr {
-			typedValue, ok := value.(*T)
-			if !ok {
-				return nil, ErrWrongDataType
-			}
-			return typedValue, nil
-		} else {
-			typedValue, ok := value.(T)
-			if !ok {
-				return nil, ErrWrongDataType
-			}
-			return &typedValue, nil
-		}
-	}
-
-	return nil, err
+	c.computeLocks.RLock(key)
+	defer c.computeLocks.RUnlock(key)
+	return c.getNoLock(key)
 }
 
 // GetIndirect gets a key value following any intermediary links
 func (c *Cache[T]) GetIndirect(key string, linkResolver func(*T) string) (*T, error) {
-	value, err := c.Get(key)
+	c.computeLocks.RLock(key)
+	defer c.computeLocks.RUnlock(key)
+	value, err := c.getNoLock(key)
 	if err != nil {
 		return nil, err
 	}
@@ -155,19 +124,23 @@ func (c *Cache[T]) GetIndirect(key string, linkResolver func(*T) string) (*T, er
 
 // SetIndirect sets cache key including intermediary links
 func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(*T) string, linkGenerator func(*T) *T) error {
+	c.computeLocks.Lock(key)
+	defer c.computeLocks.Unlock(key)
 	if linkGenerator != nil && linkResolver != nil {
 		if linkValue := linkGenerator(value); linkValue != nil {
 			link := linkResolver(linkValue)
+			c.computeLocks.Lock(link)
+			defer c.computeLocks.Unlock(link)
 
-			if err := c.Set(key, linkValue); err != nil {
+			if err := c.setNoLock(key, linkValue); err != nil {
 				return err
 			}
 
-			return c.Set(link, value)
+			return c.setNoLock(link, value)
 		}
 	}
 
-	return c.Set(key, value)
+	return c.setNoLock(key, value)
 }
 
 // GetOrComputeEx tries to get value from cache.
@@ -179,7 +152,9 @@ func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(*T) strin
 // linkGenerator - generates intermediate link value if needed when a new record is inserted
 // writeApprover - decides if new value is to be written in the cache
 func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), validator func(*T) bool, linkResolver func(*T) string, linkGenerator func(*T) *T, writeApprover func(*T) bool) (*T, error) {
-	value, err := c.GetIndirect(key, linkResolver)
+	c.computeLocks.Lock(key)
+	defer c.computeLocks.Unlock(key)
+	value, err := c.getIndirectNoLock(key, linkResolver)
 	if err == nil && (validator == nil || validator(value)) {
 		return value, nil
 	}
@@ -191,7 +166,7 @@ func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), vali
 		if err == ErrNotFound {
 			if writeApprover == nil || writeApprover(value) {
 				// Key not found in cache
-				c.SetIndirect(key, value, linkResolver, linkGenerator)
+				c.setIndirectNoLock(key, value, linkResolver, linkGenerator)
 			}
 
 			return value, nil
@@ -216,9 +191,12 @@ func (c *Cache[T]) DeletePredicate(pred Predicate) ([]string, error) {
 
 	for _, key := range keys {
 		if pred(key) {
+			c.computeLocks.Lock(key)
 			if err := c.engine.Delete(key); err != nil {
+				c.computeLocks.Unlock(key)
 				return removedKeys, err
 			}
+			c.computeLocks.Unlock(key)
 			removedKeys = append(removedKeys, key)
 		}
 	}
@@ -275,8 +253,8 @@ func (c *Cache[T]) CountRegExp(pattern string) (int, error) {
 
 // Peek gets a value by given key and does not change it's "lruness"
 func (c *Cache[T]) Peek(key string) (*T, error) {
-	lock := c.lockKey(key)
-	defer c.unlock(lock)
+	c.computeLocks.RLock(key)
+	defer c.computeLocks.RUnlock(key)
 	value, err := c.engine.Peek(key)
 	if err == nil {
 		typedValue, ok := value.(T)
@@ -292,13 +270,15 @@ func (c *Cache[T]) Peek(key string) (*T, error) {
 
 // Delete removes a key from cache
 func (c *Cache[T]) Delete(key string) error {
-	lock := c.lockKey(key)
-	defer c.unlock(lock)
+	c.computeLocks.Lock(key)
+	defer c.computeLocks.Unlock(key)
 	return c.engine.Delete(key)
 }
 
 // Purge removes all records from the cache
 func (c *Cache[T]) Purge() error {
+	c.computeLocks.LockAll()
+	defer c.computeLocks.UnlockAll()
 	c.engine.Purge()
 	return nil
 }
@@ -306,4 +286,68 @@ func (c *Cache[T]) Purge() error {
 // Keys returns all the keys in cache
 func (c *Cache[T]) Keys() ([]string, error) {
 	return c.engine.Keys()
+}
+
+// getNoLock gets a cached value by key
+func (c *Cache[T]) getNoLock(key string) (*T, error) {
+	value, err := c.engine.Get(key)
+	if err == nil {
+		if reflect.ValueOf(value).Kind() == reflect.Ptr {
+			typedValue, ok := value.(*T)
+			if !ok {
+				return nil, ErrWrongDataType
+			}
+			return typedValue, nil
+		} else {
+			typedValue, ok := value.(T)
+			if !ok {
+				return nil, ErrWrongDataType
+			}
+			return &typedValue, nil
+		}
+	}
+
+	return nil, err
+}
+
+// setNoLock stores a key-value pair into cache
+func (c *Cache[T]) setNoLock(key string, value *T) error {
+	return c.engine.Set(key, value)
+}
+
+// getIndirectNoLock gets a key value following any intermediary links
+func (c *Cache[T]) getIndirectNoLock(key string, linkResolver func(*T) string) (*T, error) {
+	value, err := c.getNoLock(key)
+	if err != nil {
+		return nil, err
+	}
+
+	if linkResolver != nil {
+		if link := linkResolver(value); len(link) > 0 && link != key {
+			// here I want to have lock for link key
+			return c.GetIndirect(link, linkResolver)
+		}
+	}
+
+	return value, nil
+}
+
+// setIndirectNoLock sets cache key including intermediary links
+func (c *Cache[T]) setIndirectNoLock(key string, value *T, linkResolver func(*T) string, linkGenerator func(*T) *T) error {
+	if linkGenerator != nil && linkResolver != nil {
+		if linkValue := linkGenerator(value); linkValue != nil {
+			link := linkResolver(linkValue)
+			// I want to have lock for link key
+			c.computeLocks.Lock(link)
+			defer c.computeLocks.Unlock(link)
+
+			if err := c.setNoLock(key, linkValue); err != nil {
+				return err
+			}
+
+			return c.setNoLock(link, value)
+		}
+	}
+
+	return c.setNoLock(key, value)
 }
