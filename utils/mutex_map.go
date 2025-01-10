@@ -3,18 +3,21 @@ package utils
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // MutexMap provides a locking mechanism based on provided name
 type MutexMap struct {
-	mutex sync.Mutex
-	locks map[string]*lockEntry
+	mutex   sync.Mutex
+	locks   map[string]*lockEntry
+	invalid uint32
 }
 
 // NewMutexMap creates a new MutexMap
 func NewMutexMap() *MutexMap {
 	return &MutexMap{
-		locks: make(map[string]*lockEntry),
+		locks:   make(map[string]*lockEntry),
+		invalid: 0,
 	}
 }
 
@@ -77,6 +80,40 @@ func (m *MutexMap) Unlock(name string) {
 
 func (m *MutexMap) RUnlock(name string) {
 	m.unlock(name, true)
+}
+
+func (m *MutexMap) IsInvalidated() bool {
+	return atomic.LoadUint32(&m.invalid) == 1
+}
+
+func (m *MutexMap) LockAll() {
+	m.mutex.Lock()
+}
+
+func (m *MutexMap) UnlockAll() {
+	m.mutex.Unlock()
+}
+
+func (m *MutexMap) Purge() {
+	// inform all threads waiting for key lock that cache is invalid
+	atomic.StoreUint32(&m.invalid, 1)
+
+	mutexCheckTicker := time.NewTicker(1 * time.Second)
+	guardTicker := time.NewTicker(120 * time.Second)
+
+Loop:
+	for {
+		select {
+		case <-mutexCheckTicker.C:
+			// wait for all threads (being started before cache purge) to finish processing
+			if len(m.locks) == 0 {
+				break Loop
+			}
+		case <-guardTicker.C:
+			break Loop
+		}
+	}
+	atomic.StoreUint32(&m.invalid, 0)
 }
 
 // lockCtr represents a lock for a given name.

@@ -22,6 +22,7 @@ package cachier
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
@@ -95,6 +96,9 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 func (c *Cache[T]) Set(key string, value *T) error {
 	c.computeLocks.Lock(key)
 	defer c.computeLocks.Unlock(key)
+	if c.computeLocks.IsInvalidated() {
+		return nil
+	}
 	return c.engine.Set(key, value)
 }
 
@@ -276,7 +280,14 @@ func (c *Cache[T]) Delete(key string) error {
 
 // Purge removes all records from the cache
 func (c *Cache[T]) Purge() error {
-	return c.engine.Purge()
+	c.computeLocks.LockAll()
+	// No new lock for keys are created as whole struct is locked
+	err := c.engine.Purge()
+	go func() {
+		c.computeLocks.Purge()
+		c.computeLocks.UnlockAll()
+	}()
+	return err
 }
 
 // Keys returns all the keys in cache
@@ -286,6 +297,9 @@ func (c *Cache[T]) Keys() ([]string, error) {
 
 // getNoLock gets a cached value by key
 func (c *Cache[T]) getNoLock(key string) (*T, error) {
+	if c.computeLocks.IsInvalidated() {
+		return nil, fmt.Errorf("cache is being purged")
+	}
 	value, err := c.engine.Get(key)
 	if err == nil {
 		if reflect.ValueOf(value).Kind() == reflect.Ptr {
@@ -308,6 +322,9 @@ func (c *Cache[T]) getNoLock(key string) (*T, error) {
 
 // setNoLock stores a key-value pair into cache
 func (c *Cache[T]) setNoLock(key string, value *T) error {
+	if c.computeLocks.IsInvalidated() {
+		return nil
+	}
 	return c.engine.Set(key, value)
 }
 
