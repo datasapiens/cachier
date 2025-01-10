@@ -49,18 +49,6 @@ func (m *MutexMap) Lock(name string) {
 	m.lock(name, false)
 }
 
-func (m *MutexMap) LockAll() {
-	m.mutex.Lock()
-}
-
-func (m *MutexMap) UnlockAll() {
-	m.mutex.Unlock()
-}
-
-func (m *MutexMap) Purge() {
-	m.locks = make(map[string]*lockEntry)
-}
-
 func (m *MutexMap) unlock(name string, readonly bool) {
 	m.mutex.Lock()
 	nameLock, exists := m.locks[name]

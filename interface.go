@@ -276,11 +276,7 @@ func (c *Cache[T]) Delete(key string) error {
 
 // Purge removes all records from the cache
 func (c *Cache[T]) Purge() error {
-	c.computeLocks.LockAll()
-	defer c.computeLocks.UnlockAll()
-	c.computeLocks.Purge()
-	c.engine.Purge()
-	return nil
+	return c.engine.Purge()
 }
 
 // Keys returns all the keys in cache
