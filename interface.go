@@ -267,7 +267,6 @@ func (c *Cache[T]) Peek(key string) (*T, error) {
 func (c *Cache[T]) Delete(key string) error {
 	c.computeLocks.Lock(key)
 	defer c.computeLocks.Unlock(key)
-	c.computeLocks.Purge()
 	return c.engine.Delete(key)
 }
 
@@ -275,6 +274,7 @@ func (c *Cache[T]) Delete(key string) error {
 func (c *Cache[T]) Purge() error {
 	c.computeLocks.LockAll()
 	defer c.computeLocks.UnlockAll()
+	c.computeLocks.Purge()
 	c.engine.Purge()
 	return nil
 }
