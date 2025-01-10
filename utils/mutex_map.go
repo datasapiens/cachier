@@ -95,6 +95,10 @@ func (m *MutexMap) UnlockAll() {
 }
 
 func (m *MutexMap) Purge() {
+	if len(m.locks) == 0 {
+		return
+	}
+
 	// inform all threads waiting for key lock that cache is invalid
 	atomic.StoreUint32(&m.invalid, 1)
 
