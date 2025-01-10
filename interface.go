@@ -281,7 +281,7 @@ func (c *Cache[T]) Delete(key string) error {
 // Purge removes all records from the cache
 func (c *Cache[T]) Purge() error {
 	c.computeLocks.LockAll()
-	// No new lock for keys are created as whole struct is locked
+	// No new locks for keys are created as whole struct is locked
 	err := c.engine.Purge()
 	go func() {
 		c.computeLocks.Purge()
