@@ -67,9 +67,9 @@ func MakeCache[T any](engine CacheEngine) *Cache[T] {
 // In case of other errors the value is evaluated but not stored in the cache.
 func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, error) {
 	c.computeLocks.Lock(key)
-	defer c.computeLocks.Unlock(key)
 	value, err := c.getNoLock(key)
 	if err == nil {
+		c.computeLocks.Unlock(key)
 		return value, nil
 	}
 
@@ -77,10 +77,14 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 
 	if evaluatorErr == nil {
 		// Key not found on cache
-		c.setNoLock(key, calculatedValue)
+		go func() {
+			c.setNoLock(key, calculatedValue)
+			c.computeLocks.Unlock(key)
+		}()
 		return calculatedValue, nil
 	} else {
 		// evalutation error
+		c.computeLocks.Unlock(key)
 		calculatedValue = nil
 		err = evaluatorErr
 	}
