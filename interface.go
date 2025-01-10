@@ -77,10 +77,7 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 
 	if evaluatorErr == nil {
 		// Key not found on cache
-		go func() {
-			// Set key to cache in gorutine
-			c.setNoLock(key, calculatedValue)
-		}()
+		c.setNoLock(key, calculatedValue)
 		return calculatedValue, nil
 	} else {
 		// evalutation error
@@ -106,9 +103,7 @@ func (c *Cache[T]) Get(key string) (*T, error) {
 
 // GetIndirect gets a key value following any intermediary links
 func (c *Cache[T]) GetIndirect(key string, linkResolver func(*T) string) (*T, error) {
-	c.computeLocks.RLock(key)
-	defer c.computeLocks.RUnlock(key)
-	value, err := c.getNoLock(key)
+	value, err := c.Get(key)
 	if err != nil {
 		return nil, err
 	}
@@ -272,6 +267,7 @@ func (c *Cache[T]) Peek(key string) (*T, error) {
 func (c *Cache[T]) Delete(key string) error {
 	c.computeLocks.Lock(key)
 	defer c.computeLocks.Unlock(key)
+	c.computeLocks.Purge()
 	return c.engine.Delete(key)
 }
 
