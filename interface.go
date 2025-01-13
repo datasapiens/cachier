@@ -128,11 +128,13 @@ func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(*T) strin
 	if linkGenerator != nil && linkResolver != nil {
 		if linkValue := linkGenerator(value); linkValue != nil {
 			link := linkResolver(linkValue)
-			c.computeLocks.Lock(link)
-			defer c.computeLocks.Unlock(link)
+			if link != key {
+				c.computeLocks.Lock(link)
+				defer c.computeLocks.Unlock(link)
 
-			if err := c.setNoLock(key, linkValue); err != nil {
-				return err
+				if err := c.setNoLock(key, linkValue); err != nil {
+					return err
+				}
 			}
 
 			return c.setNoLock(link, value)
