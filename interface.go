@@ -321,7 +321,7 @@ func (c *Cache[T]) getIndirectNoLock(key string, linkResolver func(*T) string) (
 	if linkResolver != nil {
 		if link := linkResolver(value); len(link) > 0 && link != key {
 			// here I want to have lock for link key
-			return c.GetIndirect(link, linkResolver)
+			return c.getIndirectNoLock(link, linkResolver)
 		}
 	}
 
