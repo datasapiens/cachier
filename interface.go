@@ -127,13 +127,16 @@ func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(*T) strin
 	defer c.computeLocks.Unlock(key, mutex)
 	if linkGenerator != nil && linkResolver != nil {
 		if linkValue := linkGenerator(value); linkValue != nil {
-			if err := c.setNoLock(key, linkValue); err != nil {
-				return err
-			}
 			link := linkResolver(linkValue)
 			if link != key {
-				return c.Set(link, value)
+				lock := c.computeLocks.Lock(link)
+				defer c.computeLocks.Unlock(link, lock)
+				if err := c.setNoLock(key, linkValue); err != nil {
+					return err
+				}
 			}
+
+			return c.setNoLock(link, value)
 		}
 	}
 
@@ -330,15 +333,16 @@ func (c *Cache[T]) getIndirectNoLock(key string, linkResolver func(*T) string) (
 func (c *Cache[T]) setIndirectNoLock(key string, value *T, linkResolver func(*T) string, linkGenerator func(*T) *T) error {
 	if linkGenerator != nil && linkResolver != nil {
 		if linkValue := linkGenerator(value); linkValue != nil {
-			if err := c.setNoLock(key, linkValue); err != nil {
-				return err
-			}
-
 			link := linkResolver(linkValue)
 			if link != key {
-				// I want to have lock for link key
-				return c.Set(link, value)
+				lock := c.computeLocks.Lock(link)
+				defer c.computeLocks.Unlock(link, lock)
+				if err := c.setNoLock(key, linkValue); err != nil {
+					return err
+				}
 			}
+
+			return c.setNoLock(link, value)
 		}
 	}
 
