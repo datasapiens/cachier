@@ -66,10 +66,10 @@ func MakeCache[T any](engine CacheEngine) *Cache[T] {
 // If not found, it computes the value using provided evaluator function and stores it into cache.
 // In case of other errors the value is evaluated but not stored in the cache.
 func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, error) {
-	c.computeLocks.Lock(key)
+	mutex := c.computeLocks.Lock(key)
 	value, err := c.getNoLock(key)
 	if err == nil {
-		c.computeLocks.Unlock(key)
+		c.computeLocks.Unlock(key, mutex)
 		return value, nil
 	}
 
@@ -79,12 +79,12 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 		// Key not found on cache
 		go func() {
 			c.setNoLock(key, calculatedValue)
-			c.computeLocks.Unlock(key)
+			c.computeLocks.Unlock(key, mutex)
 		}()
 		return calculatedValue, nil
 	} else {
 		// evalutation error
-		c.computeLocks.Unlock(key)
+		c.computeLocks.Unlock(key, mutex)
 		calculatedValue = nil
 		err = evaluatorErr
 	}
@@ -93,15 +93,15 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 
 // Set stores a key-value pair into cache
 func (c *Cache[T]) Set(key string, value *T) error {
-	c.computeLocks.Lock(key)
-	defer c.computeLocks.Unlock(key)
+	mutex := c.computeLocks.Lock(key)
+	defer c.computeLocks.Unlock(key, mutex)
 	return c.engine.Set(key, value)
 }
 
 // Get gets a cached value by key
 func (c *Cache[T]) Get(key string) (*T, error) {
-	c.computeLocks.RLock(key)
-	defer c.computeLocks.RUnlock(key)
+	mutex := c.computeLocks.RLock(key)
+	defer c.computeLocks.RUnlock(key, mutex)
 	return c.getNoLock(key)
 }
 
@@ -123,15 +123,14 @@ func (c *Cache[T]) GetIndirect(key string, linkResolver func(*T) string) (*T, er
 
 // SetIndirect sets cache key including intermediary links
 func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(*T) string, linkGenerator func(*T) *T) error {
-	c.computeLocks.Lock(key)
-	defer c.computeLocks.Unlock(key)
+	mutex := c.computeLocks.Lock(key)
+	defer c.computeLocks.Unlock(key, mutex)
 	if linkGenerator != nil && linkResolver != nil {
 		if linkValue := linkGenerator(value); linkValue != nil {
 			link := linkResolver(linkValue)
 			if link != key {
-				c.computeLocks.Lock(link)
-				defer c.computeLocks.Unlock(link)
-
+				lock := c.computeLocks.Lock(link)
+				defer c.computeLocks.Unlock(link, lock)
 				if err := c.setNoLock(key, linkValue); err != nil {
 					return err
 				}
@@ -153,8 +152,8 @@ func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(*T) strin
 // linkGenerator - generates intermediate link value if needed when a new record is inserted
 // writeApprover - decides if new value is to be written in the cache
 func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), validator func(*T) bool, linkResolver func(*T) string, linkGenerator func(*T) *T, writeApprover func(*T) bool) (*T, error) {
-	c.computeLocks.Lock(key)
-	defer c.computeLocks.Unlock(key)
+	mutex := c.computeLocks.Lock(key)
+	defer c.computeLocks.Unlock(key, mutex)
 	value, err := c.getIndirectNoLock(key, linkResolver)
 	if err == nil && (validator == nil || validator(value)) {
 		return value, nil
@@ -192,12 +191,12 @@ func (c *Cache[T]) DeletePredicate(pred Predicate) ([]string, error) {
 
 	for _, key := range keys {
 		if pred(key) {
-			c.computeLocks.Lock(key)
+			mutex := c.computeLocks.Lock(key)
 			if err := c.engine.Delete(key); err != nil {
-				c.computeLocks.Unlock(key)
+				c.computeLocks.Unlock(key, mutex)
 				return removedKeys, err
 			}
-			c.computeLocks.Unlock(key)
+			c.computeLocks.Unlock(key, mutex)
 			removedKeys = append(removedKeys, key)
 		}
 	}
@@ -254,8 +253,8 @@ func (c *Cache[T]) CountRegExp(pattern string) (int, error) {
 
 // Peek gets a value by given key and does not change it's "lruness"
 func (c *Cache[T]) Peek(key string) (*T, error) {
-	c.computeLocks.RLock(key)
-	defer c.computeLocks.RUnlock(key)
+	mutex := c.computeLocks.RLock(key)
+	defer c.computeLocks.RUnlock(key, mutex)
 	value, err := c.engine.Peek(key)
 	if err == nil {
 		typedValue, ok := value.(T)
@@ -271,8 +270,8 @@ func (c *Cache[T]) Peek(key string) (*T, error) {
 
 // Delete removes a key from cache
 func (c *Cache[T]) Delete(key string) error {
-	c.computeLocks.Lock(key)
-	defer c.computeLocks.Unlock(key)
+	mutex := c.computeLocks.Lock(key)
+	defer c.computeLocks.Unlock(key, mutex)
 	return c.engine.Delete(key)
 }
 
@@ -335,12 +334,12 @@ func (c *Cache[T]) setIndirectNoLock(key string, value *T, linkResolver func(*T)
 	if linkGenerator != nil && linkResolver != nil {
 		if linkValue := linkGenerator(value); linkValue != nil {
 			link := linkResolver(linkValue)
-			// I want to have lock for link key
-			c.computeLocks.Lock(link)
-			defer c.computeLocks.Unlock(link)
-
-			if err := c.setNoLock(key, linkValue); err != nil {
-				return err
+			if link != key {
+				lock := c.computeLocks.Lock(link)
+				defer c.computeLocks.Unlock(link, lock)
+				if err := c.setNoLock(key, linkValue); err != nil {
+					return err
+				}
 			}
 
 			return c.setNoLock(link, value)

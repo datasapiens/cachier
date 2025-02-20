@@ -18,12 +18,12 @@ func NewMutexMap() *MutexMap {
 	}
 }
 
-func (m *MutexMap) lock(name string, readonly bool) {
+func (m *MutexMap) lock(name string, readonly bool) *sync.RWMutex {
 	m.mutex.Lock()
 	nameLock, exists := m.locks[name]
 	if !exists {
 		nameLock = &lockEntry{
-			waiters: 1,
+			callers: 1,
 		}
 		m.locks[name] = nameLock
 	} else {
@@ -36,34 +36,42 @@ func (m *MutexMap) lock(name string, readonly bool) {
 	} else {
 		nameLock.lock()
 	}
-	// I used the resource, I am not waiting any more to access the lock
-	nameLock.dec()
+
+	return &nameLock.mutex
 }
 
-func (m *MutexMap) RLock(name string) {
-	m.lock(name, true)
+func (m *MutexMap) RLock(name string) *sync.RWMutex {
+	return m.lock(name, true)
 }
 
 // Lock locks a mutex with the given name.
-func (m *MutexMap) Lock(name string) {
-	m.lock(name, false)
+func (m *MutexMap) Lock(name string) *sync.RWMutex {
+	return m.lock(name, false)
 }
 
-func (m *MutexMap) unlock(name string, readonly bool) {
+func (m *MutexMap) unlock(name string, readonly bool, mutex *sync.RWMutex) {
 	m.mutex.Lock()
 	nameLock, exists := m.locks[name]
-	if !exists {
+	if !exists || &nameLock.mutex != mutex {
+		if mutex != nil {
+			if readonly {
+				mutex.RUnlock()
+			} else {
+				mutex.Unlock()
+			}
+		}
 		m.mutex.Unlock()
 		return
 	}
 
-	if nameLock.count() == 0 {
-		delete(m.locks, name)
-	}
 	if readonly {
 		nameLock.runlock()
 	} else {
 		nameLock.unlock()
+	}
+	nameLock.dec()
+	if nameLock.count() == 0 {
+		delete(m.locks, name)
 	}
 
 	m.mutex.Unlock()
@@ -71,18 +79,18 @@ func (m *MutexMap) unlock(name string, readonly bool) {
 }
 
 // Unlock unlocks a mutex with the given name.
-func (m *MutexMap) Unlock(name string) {
-	m.unlock(name, false)
+func (m *MutexMap) Unlock(name string, mutex *sync.RWMutex) {
+	m.unlock(name, false, mutex)
 }
 
-func (m *MutexMap) RUnlock(name string) {
-	m.unlock(name, true)
+func (m *MutexMap) RUnlock(name string, mutex *sync.RWMutex) {
+	m.unlock(name, true, mutex)
 }
 
 // lockCtr represents a lock for a given name.
 type lockEntry struct {
 	mutex   sync.RWMutex
-	waiters int32
+	callers int32
 }
 
 func (l *lockEntry) lock() {
@@ -103,15 +111,15 @@ func (l *lockEntry) runlock() {
 
 // inc increments the number of waiters waiting for the lock
 func (l *lockEntry) inc() {
-	atomic.AddInt32(&l.waiters, 1)
+	atomic.AddInt32(&l.callers, 1)
 }
 
 // dec decrements the number of waiters waiting on the lock
 func (l *lockEntry) dec() {
-	atomic.AddInt32(&l.waiters, -1)
+	atomic.AddInt32(&l.callers, -1)
 }
 
 // count gets the current number of waiters
 func (l *lockEntry) count() int32 {
-	return atomic.LoadInt32(&l.waiters)
+	return atomic.LoadInt32(&l.callers)
 }
