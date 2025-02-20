@@ -154,7 +154,7 @@ func (rc *RedisCache) Set(key string, value interface{}) (err error) {
 	rc.logger.Print("redis set " + rc.keyPrefix + key)
 	status := rc.redisClient.Set(ctx, rc.keyPrefix+key, input, rc.ttl)
 	if status.Err() != nil {
-		rc.logger.Error("redis: error setting data in cache: ", err)
+		rc.logger.Error("redis: error setting data in cache: ", status.Err())
 		return status.Err()
 	}
 	return nil
