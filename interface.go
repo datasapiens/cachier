@@ -47,10 +47,10 @@ type kvPair[T any] struct {
 // writeQueue is not actually a queue, but a map with a maximum size.
 type writeQueue[T any] struct {
 	sync.Mutex
-	Values          map[string]*T       // Map to hold the values for the keys
-	CurrentyWriting *kvPair[T]          // Key-value pair being currently written
-	InvalidKeys     map[string]struct{} // Keys that failed to write or were not added due to size limit
-	Size            int                 // Maximum size of the queue
+	Values           map[string]*T       // Map to hold the values for the keys
+	CurrentlyWriting *kvPair[T]          // Key-value pair being currently written
+	InvalidKeys      map[string]struct{} // Keys that failed to write or were not added due to size limit
+	Size             int                 // Maximum size of the queue
 }
 
 // newWriteQueue creates a new CircularQueue with the specified size
@@ -59,10 +59,10 @@ func newWriteQueue[T any](size int) *writeQueue[T] {
 		size = 100 // Default size if invalid size is provided
 	}
 	return &writeQueue[T]{
-		Values:          make(map[string]*T, size),
-		InvalidKeys:     make(map[string]struct{}, size), // Map to hold invalid keys
-		CurrentyWriting: nil,                             // No key-value pair is currently being written
-		Size:            size,
+		Values:           make(map[string]*T, size),
+		InvalidKeys:      make(map[string]struct{}, size), // Map to hold invalid keys
+		CurrentlyWriting: nil,                             // No key-value pair is currently being written
+		Size:             size,
 	}
 }
 
@@ -95,8 +95,8 @@ func (q *writeQueue[T]) Get(key string) (*T, bool) {
 		return value, true
 	}
 
-	if q.CurrentyWriting != nil && q.CurrentyWriting.Key == key {
-		return q.CurrentyWriting.Value, true
+	if q.CurrentlyWriting != nil && q.CurrentlyWriting.Key == key {
+		return q.CurrentlyWriting.Value, true
 	}
 
 	if _, invalid := q.InvalidKeys[key]; invalid {
@@ -139,7 +139,7 @@ func (q *writeQueue[T]) Count() int {
 	q.Lock()
 	defer q.Unlock()
 	count := len(q.Values) + len(q.InvalidKeys) // Count both valid and invalid keys
-	if q.CurrentyWriting != nil {
+	if q.CurrentlyWriting != nil {
 		count++ // Include the current writing key-value pair if it exists
 	}
 	return count
@@ -160,7 +160,7 @@ func (q *writeQueue[T]) CountPredicate(pred Predicate) int {
 			count++ // Count invalid keys that satisfy the predicate
 		}
 	}
-	if q.CurrentyWriting != nil && pred(q.CurrentyWriting.Key) {
+	if q.CurrentlyWriting != nil && pred(q.CurrentlyWriting.Key) {
 		count++ // Include the current writing key-value pair if it satisfies the predicate
 	}
 	return count // Return the total count
@@ -178,15 +178,15 @@ func (q *writeQueue[T]) Purge() {
 func (q *writeQueue[T]) Keys() []string {
 	q.Lock()
 	defer q.Unlock()
-	keys := make([]string, 0, len(q.Values)+len(q.InvalidKeys))
+	keys := make([]string, 0, len(q.Values)+len(q.InvalidKeys)+1)
 	for key := range q.Values {
 		keys = append(keys, key) // Add valid keys
 	}
 	for key := range q.InvalidKeys {
 		keys = append(keys, key) // Add invalid keys
 	}
-	if q.CurrentyWriting != nil {
-		keys = append(keys, q.CurrentyWriting.Key) // Include the current writing key if it exists
+	if q.CurrentlyWriting != nil {
+		keys = append(keys, q.CurrentlyWriting.Key) // Include the current writing key if it exists
 	}
 	return keys // Return the list of all keys
 }
@@ -197,9 +197,9 @@ func (q *writeQueue[T]) StartWriting() (*kvPair[T], bool) {
 	defer q.Unlock()
 
 	for key, value := range q.Values {
-		q.CurrentyWriting = &kvPair[T]{Key: key, Value: value} // Set the current writing key-value pair
-		delete(q.Values, key)                                  // Remove it from the queue
-		return q.CurrentyWriting, true                         // Return the first key-value pair found
+		q.CurrentlyWriting = &kvPair[T]{Key: key, Value: value} // Set the current writing key-value pair
+		delete(q.Values, key)                                   // Remove it from the queue
+		return q.CurrentlyWriting, true                         // Return the first key-value pair found
 	}
 
 	return nil, false // Queue is empty
@@ -209,12 +209,12 @@ func (q *writeQueue[T]) StartWriting() (*kvPair[T], bool) {
 func (q *writeQueue[T]) DoneWriting(ok bool) {
 	q.Lock()
 	defer q.Unlock()
-	if q.CurrentyWriting != nil {
+	if q.CurrentlyWriting != nil {
 		if !ok {
 			// If writing was not successful, mark the key as invalid
-			q.InvalidKeys[q.CurrentyWriting.Key] = struct{}{}
+			q.InvalidKeys[q.CurrentlyWriting.Key] = struct{}{}
 		}
-		q.CurrentyWriting = nil // Reset the current writing key-value pair
+		q.CurrentlyWriting = nil // Reset the current writing key-value pair
 	}
 }
 
