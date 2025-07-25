@@ -26,7 +26,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/datasapiens/cachier/utils"
@@ -37,186 +36,6 @@ var (
 	ErrNotFound      = errors.New("key not found")
 	ErrWrongDataType = errors.New("data in wrong format")
 )
-
-// kvPair is a key-value pair used for storing in cache.
-type kvPair[T any] struct {
-	Key   string
-	Value *T
-}
-
-// writeQueue is not actually a queue, but a map with a maximum size.
-type writeQueue[T any] struct {
-	sync.Mutex
-	Values           map[string]*T       // Map to hold the values for the keys
-	CurrentlyWriting *kvPair[T]          // Key-value pair being currently written
-	InvalidKeys      map[string]struct{} // Keys that failed to write or were not added due to size limit
-	Size             int                 // Maximum size of the queue
-}
-
-// newWriteQueue creates a new CircularQueue with the specified size
-func newWriteQueue[T any](size int) *writeQueue[T] {
-	if size <= 0 {
-		size = 100 // Default size if invalid size is provided
-	}
-	return &writeQueue[T]{
-		Values:           make(map[string]*T, size),
-		InvalidKeys:      make(map[string]struct{}, size), // Map to hold invalid keys
-		CurrentlyWriting: nil,                             // No key-value pair is currently being written
-		Size:             size,
-	}
-}
-
-// Enqueue adds a new key-value pair to the queue, overwriting the oldest entry if the queue is full
-func (q *writeQueue[T]) Enqueue(key string, value *T) {
-	q.Lock()
-	defer q.Unlock()
-
-	_, exists := q.Values[key]
-
-	// If the key is not already in queue and the queue is full, mark it as invalid
-	if !exists && len(q.Values) >= q.Size {
-		q.InvalidKeys[key] = struct{}{} // Mark the key as invalid if the queue is full
-		return
-	}
-
-	delete(q.InvalidKeys, key) // Remove the key from invalid keys
-	q.Values[key] = value
-}
-
-// Get retrieves the value for a given key from the queue.
-//
-//	Returns nil, true if the key is invalid. Returns nil, false if the key was not found.
-func (q *writeQueue[T]) Get(key string) (*T, bool) {
-	q.Lock()
-	defer q.Unlock()
-
-	value, exists := q.Values[key]
-	if exists {
-		return value, true
-	}
-
-	if q.CurrentlyWriting != nil && q.CurrentlyWriting.Key == key {
-		return q.CurrentlyWriting.Value, true
-	}
-
-	if _, invalid := q.InvalidKeys[key]; invalid {
-		return nil, true // Key is invalid, return nil
-	}
-
-	return nil, false // Key not found
-}
-
-// Delete removes a key from the queue
-func (q *writeQueue[T]) Delete(key string) {
-	q.Lock()
-	defer q.Unlock()
-	delete(q.Values, key)      // Remove the key from the queue
-	delete(q.InvalidKeys, key) // If the key is invalid, remove it from invalid keys
-}
-
-// DeletePredicate removes all keys matching the supplied predicate
-func (q *writeQueue[T]) DeletePredicate(pred Predicate) []string {
-	q.Lock()
-	defer q.Unlock()
-	removedKeys := make([]string, 0)
-	for key := range q.Values {
-		if pred(key) {
-			delete(q.Values, key) // Remove the key from the queue
-			removedKeys = append(removedKeys, key)
-		}
-	}
-	for key := range q.InvalidKeys {
-		if pred(key) {
-			delete(q.InvalidKeys, key) // Remove the key from invalid keys
-			removedKeys = append(removedKeys, key)
-		}
-	}
-	return removedKeys // Return the list of removed keys
-}
-
-// Count returns the number of keys in the queue
-func (q *writeQueue[T]) Count() int {
-	q.Lock()
-	defer q.Unlock()
-	count := len(q.Values) + len(q.InvalidKeys) // Count both valid and invalid keys
-	if q.CurrentlyWriting != nil {
-		count++ // Include the current writing key-value pair if it exists
-	}
-	return count
-}
-
-// CountPredicate counts the number of keys in the queue that satisfy the given predicate
-func (q *writeQueue[T]) CountPredicate(pred Predicate) int {
-	q.Lock()
-	defer q.Unlock()
-	count := 0
-	for key := range q.Values {
-		if pred(key) {
-			count++ // Count valid keys that satisfy the predicate
-		}
-	}
-	for key := range q.InvalidKeys {
-		if pred(key) {
-			count++ // Count invalid keys that satisfy the predicate
-		}
-	}
-	if q.CurrentlyWriting != nil && pred(q.CurrentlyWriting.Key) {
-		count++ // Include the current writing key-value pair if it satisfies the predicate
-	}
-	return count // Return the total count
-}
-
-// Purge removes all records from the queue
-func (q *writeQueue[T]) Purge() {
-	q.Lock()
-	defer q.Unlock()
-	q.Values = make(map[string]*T, q.Size)            // Reset the values map
-	q.InvalidKeys = make(map[string]struct{}, q.Size) // Reset the invalid keys map
-}
-
-// Keys returns all the keys in the queue
-func (q *writeQueue[T]) Keys() []string {
-	q.Lock()
-	defer q.Unlock()
-	keys := make([]string, 0, len(q.Values)+len(q.InvalidKeys)+1)
-	for key := range q.Values {
-		keys = append(keys, key) // Add valid keys
-	}
-	for key := range q.InvalidKeys {
-		keys = append(keys, key) // Add invalid keys
-	}
-	if q.CurrentlyWriting != nil {
-		keys = append(keys, q.CurrentlyWriting.Key) // Include the current writing key if it exists
-	}
-	return keys // Return the list of all keys
-}
-
-// StartWriting removes the oldest key-value pair from the queue
-func (q *writeQueue[T]) StartWriting() (*kvPair[T], bool) {
-	q.Lock()
-	defer q.Unlock()
-
-	for key, value := range q.Values {
-		q.CurrentlyWriting = &kvPair[T]{Key: key, Value: value} // Set the current writing key-value pair
-		delete(q.Values, key)                                   // Remove it from the queue
-		return q.CurrentlyWriting, true                         // Return the first key-value pair found
-	}
-
-	return nil, false // Queue is empty
-}
-
-// DoneWriting marks the current writing key-value pair as done
-func (q *writeQueue[T]) DoneWriting(ok bool) {
-	q.Lock()
-	defer q.Unlock()
-	if q.CurrentlyWriting != nil {
-		if !ok {
-			// If writing was not successful, mark the key as invalid
-			q.InvalidKeys[q.CurrentlyWriting.Key] = struct{}{}
-		}
-		q.CurrentlyWriting = nil // Reset the current writing key-value pair
-	}
-}
 
 // Predicate evaluates a condition on the input string
 type Predicate func(string) bool
@@ -245,7 +64,7 @@ func MakeCache[T any](engine CacheEngine) *Cache[T] {
 	cache := &Cache[T]{
 		engine:        engine,
 		computeLocks:  *utils.NewMutexMap(),
-		writeQueue:    newWriteQueue[T](1000),
+		writeQueue:    newWriteQueue[T](),
 		writeInterval: 1000 * time.Millisecond, // Default write interval
 	}
 
@@ -373,31 +192,14 @@ func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), vali
 }
 
 // DeletePredicate deletes all keys matching the supplied predicate, returns number of deleted keys
-func (c *Cache[T]) DeletePredicate(pred Predicate) ([]string, error) {
-	removedKeys := c.writeQueue.DeletePredicate(pred)
+func (c *Cache[T]) DeletePredicate(pred Predicate) error {
+	c.writeQueue.DeletePredicate(pred)
 
-	keys, err := c.Keys()
-	if err != nil {
-		return removedKeys, err
-	}
-
-	for _, key := range keys {
-		if pred(key) {
-			mutex := c.computeLocks.Lock(key)
-			if err := c.engine.Delete(key); err != nil {
-				c.computeLocks.Unlock(key, mutex)
-				return removedKeys, err
-			}
-			c.computeLocks.Unlock(key, mutex)
-			removedKeys = append(removedKeys, key)
-		}
-	}
-
-	return removedKeys, nil
+	return nil
 }
 
 // DeleteWithPrefix removes all keys that start with given prefix, returns number of deleted keys
-func (c *Cache[T]) DeleteWithPrefix(prefix string) ([]string, error) {
+func (c *Cache[T]) DeleteWithPrefix(prefix string) error {
 	pred := func(s string) bool {
 		return strings.HasPrefix(s, prefix)
 	}
@@ -406,10 +208,10 @@ func (c *Cache[T]) DeleteWithPrefix(prefix string) ([]string, error) {
 }
 
 // DeleteRegExp deletes all keys matching the supplied regexp, returns number of deleted keys
-func (c *Cache[T]) DeleteRegExp(pattern string) ([]string, error) {
+func (c *Cache[T]) DeleteRegExp(pattern string) error {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	return c.DeletePredicate(re.MatchString)
@@ -524,7 +326,7 @@ func (c *Cache[T]) getNoLock(key string) (*T, error) {
 
 // setNoLock stores a key-value pair into cache
 func (c *Cache[T]) setNoLock(key string, value *T) error {
-	c.writeQueue.Enqueue(key, value)
+	c.writeQueue.Set(key, value)
 	return nil
 }
 
@@ -569,18 +371,39 @@ func (c *Cache[T]) setIndirectNoLock(key string, value *T, linkResolver func(*T)
 func (c *Cache[T]) writeLoop() {
 	for range time.Tick(c.writeInterval) {
 		for {
-			pair, ok := c.writeQueue.StartWriting()
+			op, ok := c.writeQueue.StartWriting()
 			if !ok {
 				break // No more items to process
 			}
 
-			err := c.engine.Set(pair.Key, pair.Value)
-			if err != nil {
-				c.writeQueue.DoneWriting(false) // Mark as invalid
-				continue
-			}
+			switch op := op.(type) {
+			case *queueOperationSet[T]:
+				err := c.engine.Set(op.Key, op.Value)
 
-			c.writeQueue.DoneWriting(true) // Mark as successfully written
+				c.writeQueue.DoneWriting(err == nil)
+
+			case *queueOperationDelete:
+				err := c.engine.Delete(op.Key)
+
+				c.writeQueue.DoneWriting(err == nil)
+
+			case *queueOperationDeletePredicate:
+				keys, err := c.engine.Keys()
+				if err == nil {
+					for _, key := range keys {
+						if op.Predicate(key) {
+							err = c.engine.Delete(key)
+						}
+					}
+				}
+
+				c.writeQueue.DoneWriting(err == nil)
+
+			case *queueOperationPurge:
+				err := c.engine.Purge()
+
+				c.writeQueue.DoneWriting(err == nil)
+			}
 		}
 	}
 }
