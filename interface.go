@@ -24,7 +24,9 @@ import (
 	"errors"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/datasapiens/cachier/utils"
 )
@@ -51,15 +53,24 @@ type CacheEngine interface {
 // Cache is an implementation of a cache (key-value store).
 // It needs to be provided with cache engine.
 type Cache[T any] struct {
-	engine       CacheEngine
-	computeLocks utils.MutexMap
+	engine        CacheEngine
+	computeLocks  utils.MutexMap
+	writeQueue    *writeQueue[T]
+	writeInterval time.Duration
 }
 
 // MakeCache creates cache with provided engine
 func MakeCache[T any](engine CacheEngine) *Cache[T] {
-	return &Cache[T]{
-		engine:       engine,
-		computeLocks: *utils.NewMutexMap()}
+	cache := &Cache[T]{
+		engine:        engine,
+		computeLocks:  *utils.NewMutexMap(),
+		writeQueue:    newWriteQueue[T](),
+		writeInterval: 1000 * time.Millisecond, // Default write interval
+	}
+
+	go cache.writeLoop() // Start the write loop in a goroutine
+
+	return cache
 }
 
 // GetOrCompute tries to get value from cache.
@@ -95,7 +106,7 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 func (c *Cache[T]) Set(key string, value *T) error {
 	mutex := c.computeLocks.Lock(key)
 	defer c.computeLocks.Unlock(key, mutex)
-	return c.engine.Set(key, value)
+	return c.setNoLock(key, value)
 }
 
 // Get gets a cached value by key
@@ -181,31 +192,14 @@ func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), vali
 }
 
 // DeletePredicate deletes all keys matching the supplied predicate, returns number of deleted keys
-func (c *Cache[T]) DeletePredicate(pred Predicate) ([]string, error) {
-	removedKeys := make([]string, 0)
+func (c *Cache[T]) DeletePredicate(pred Predicate) error {
+	c.writeQueue.DeletePredicate(pred)
 
-	keys, err := c.Keys()
-	if err != nil {
-		return nil, err
-	}
-
-	for _, key := range keys {
-		if pred(key) {
-			mutex := c.computeLocks.Lock(key)
-			if err := c.engine.Delete(key); err != nil {
-				c.computeLocks.Unlock(key, mutex)
-				return removedKeys, err
-			}
-			c.computeLocks.Unlock(key, mutex)
-			removedKeys = append(removedKeys, key)
-		}
-	}
-
-	return removedKeys, nil
+	return nil
 }
 
 // DeleteWithPrefix removes all keys that start with given prefix, returns number of deleted keys
-func (c *Cache[T]) DeleteWithPrefix(prefix string) ([]string, error) {
+func (c *Cache[T]) DeleteWithPrefix(prefix string) error {
 	pred := func(s string) bool {
 		return strings.HasPrefix(s, prefix)
 	}
@@ -214,10 +208,10 @@ func (c *Cache[T]) DeleteWithPrefix(prefix string) ([]string, error) {
 }
 
 // DeleteRegExp deletes all keys matching the supplied regexp, returns number of deleted keys
-func (c *Cache[T]) DeleteRegExp(pattern string) ([]string, error) {
+func (c *Cache[T]) DeleteRegExp(pattern string) error {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	return c.DeletePredicate(re.MatchString)
@@ -225,12 +219,12 @@ func (c *Cache[T]) DeleteRegExp(pattern string) ([]string, error) {
 
 // CountPredicate counts cache keys satisfying the given predicate
 func (c *Cache[T]) CountPredicate(pred Predicate) (int, error) {
+	count := c.writeQueue.CountPredicate(pred)
+
 	keys, err := c.Keys()
 	if err != nil {
 		return 0, err
 	}
-
-	count := 0
 
 	for _, key := range keys {
 		if pred(key) {
@@ -255,9 +249,18 @@ func (c *Cache[T]) CountRegExp(pattern string) (int, error) {
 func (c *Cache[T]) Peek(key string) (*T, error) {
 	mutex := c.computeLocks.RLock(key)
 	defer c.computeLocks.RUnlock(key, mutex)
-	value, err := c.engine.Peek(key)
+
+	if value, found := c.writeQueue.Get(key); found {
+		if value != nil {
+			return value, nil
+		}
+		// If the value is nil, it means the key is invalid (previously failed to write)
+		return nil, ErrNotFound
+	}
+
+	untypedValue, err := c.engine.Peek(key)
 	if err == nil {
-		typedValue, ok := value.(T)
+		typedValue, ok := untypedValue.(T)
 		if ok {
 			return &typedValue, nil
 		} else {
@@ -272,31 +275,45 @@ func (c *Cache[T]) Peek(key string) (*T, error) {
 func (c *Cache[T]) Delete(key string) error {
 	mutex := c.computeLocks.Lock(key)
 	defer c.computeLocks.Unlock(key, mutex)
+	c.writeQueue.Delete(key) // Remove from write queue
 	return c.engine.Delete(key)
 }
 
 // Purge removes all records from the cache
 func (c *Cache[T]) Purge() error {
+	c.writeQueue.Purge() // Clear the write queue
 	return c.engine.Purge()
 }
 
 // Keys returns all the keys in cache
 func (c *Cache[T]) Keys() ([]string, error) {
-	return c.engine.Keys()
+	writeQueueKeys := c.writeQueue.Keys()
+	engineKeys, err := c.engine.Keys()
+	return slices.Concat(writeQueueKeys, engineKeys), err
 }
 
 // getNoLock gets a cached value by key
 func (c *Cache[T]) getNoLock(key string) (*T, error) {
-	value, err := c.engine.Get(key)
+	// check write qeueue first
+	value, found := c.writeQueue.Get(key)
+	if found {
+		// If the value is nil, it means the key is invalid (previously failed to write)
+		if value == nil {
+			return nil, ErrNotFound
+		}
+		return value, nil
+	}
+
+	untypedValue, err := c.engine.Get(key)
 	if err == nil {
 		if reflect.ValueOf(value).Kind() == reflect.Ptr {
-			typedValue, ok := value.(*T)
+			typedValue, ok := untypedValue.(*T)
 			if !ok {
 				return nil, ErrWrongDataType
 			}
 			return typedValue, nil
 		} else {
-			typedValue, ok := value.(T)
+			typedValue, ok := untypedValue.(T)
 			if !ok {
 				return nil, ErrWrongDataType
 			}
@@ -309,7 +326,8 @@ func (c *Cache[T]) getNoLock(key string) (*T, error) {
 
 // setNoLock stores a key-value pair into cache
 func (c *Cache[T]) setNoLock(key string, value *T) error {
-	return c.engine.Set(key, value)
+	c.writeQueue.Set(key, value)
+	return nil
 }
 
 // getIndirectNoLock gets a key value following any intermediary links
@@ -347,4 +365,45 @@ func (c *Cache[T]) setIndirectNoLock(key string, value *T, linkResolver func(*T)
 	}
 
 	return c.setNoLock(key, value)
+}
+
+// writeLoop is a goroutine that processes the write queue.
+func (c *Cache[T]) writeLoop() {
+	for range time.Tick(c.writeInterval) {
+		for {
+			op, ok := c.writeQueue.StartWriting()
+			if !ok {
+				break // No more items to process
+			}
+
+			switch op := op.(type) {
+			case *queueOperationSet[T]:
+				err := c.engine.Set(op.Key, op.Value)
+
+				c.writeQueue.DoneWriting(err == nil)
+
+			case *queueOperationDelete:
+				err := c.engine.Delete(op.Key)
+
+				c.writeQueue.DoneWriting(err == nil)
+
+			case *queueOperationDeletePredicate:
+				keys, err := c.engine.Keys()
+				if err == nil {
+					for _, key := range keys {
+						if op.Predicate(key) {
+							err = c.engine.Delete(key)
+						}
+					}
+				}
+
+				c.writeQueue.DoneWriting(err == nil)
+
+			case *queueOperationPurge:
+				err := c.engine.Purge()
+
+				c.writeQueue.DoneWriting(err == nil)
+			}
+		}
+	}
 }
