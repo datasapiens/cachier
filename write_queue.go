@@ -262,9 +262,18 @@ func (q *writeQueue[T]) DoneWriting(ok bool) {
 	q.Lock()
 	defer q.Unlock()
 
-	if ok && q.Queue.Len() > 0 {
+	// The queue could have been changed since the StartWriting call,
+	// so we need to check if the first operation is the same as the current writing operation
+	if ok && q.Queue.Len() > 0 && q.Queue.At(0) == q.CurrentlyWriting {
 		// Remove the completed operation from the front of the queue
 		q.Queue.PopFront()
+
+		// If it's a set operation, and the value was not overridden
+		if op, ok := q.CurrentlyWriting.(*queueOperationSet[T]); ok {
+			if value, ok := q.Values[op.Key]; ok && value == op.Value {
+				delete(q.Values, op.Key)
+			}
+		}
 	}
 
 	q.CurrentlyWriting = nil // Reset the current writing operation
