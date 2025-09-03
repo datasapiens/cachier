@@ -57,15 +57,19 @@ type Cache[T any] struct {
 	computeLocks  utils.MutexMap
 	writeQueue    *writeQueue[T]
 	writeInterval time.Duration
+	statsInterval time.Duration
+	logger        Logger
 }
 
 // MakeCache creates cache with provided engine
-func MakeCache[T any](engine CacheEngine) *Cache[T] {
+func MakeCache[T any](engine CacheEngine, logger Logger) *Cache[T] {
 	cache := &Cache[T]{
 		engine:        engine,
 		computeLocks:  *utils.NewMutexMap(),
 		writeQueue:    newWriteQueue[T](),
 		writeInterval: 1000 * time.Millisecond, // Default write interval
+		statsInterval: 60 * time.Second,        // Default stats interval
+		logger:        logger,
 	}
 
 	go cache.writeLoop() // Start the write loop in a goroutine
@@ -369,7 +373,13 @@ func (c *Cache[T]) setIndirectNoLock(key string, value *T, linkResolver func(*T)
 
 // writeLoop is a goroutine that processes the write queue.
 func (c *Cache[T]) writeLoop() {
+	var lastStatsTime time.Time
 	for range time.Tick(c.writeInterval) {
+		if time.Since(lastStatsTime) >= c.statsInterval {
+			lastStatsTime = time.Now()
+			queueSize, valuesSize := c.writeQueue.GetStats()
+			c.logger.Print("Write queue stats: %d operations, %d values", queueSize, valuesSize)
+		}
 		for {
 			op, ok := c.writeQueue.StartWriting()
 			if !ok {

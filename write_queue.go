@@ -247,6 +247,10 @@ func (q *writeQueue[T]) StartWriting() (queueOperation, bool) {
 	q.Lock()
 	defer q.Unlock()
 
+	if q.CurrentlyWriting != nil {
+		panic("write operation already in progress")
+	}
+
 	if q.Queue.Len() == 0 {
 		return nil, false
 	}
@@ -277,4 +281,12 @@ func (q *writeQueue[T]) DoneWriting(ok bool) {
 	}
 
 	q.CurrentlyWriting = nil // Reset the current writing operation
+}
+
+// GetStats returns the current size of the queue
+func (q *writeQueue[T]) GetStats() (int, int) {
+	q.Lock()
+	defer q.Unlock()
+
+	return q.Queue.Len(), len(q.Values)
 }
