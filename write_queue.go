@@ -1,6 +1,9 @@
 package cachier
 
 import (
+	"fmt"
+	"reflect"
+	"runtime"
 	"sync"
 
 	"github.com/gammazero/deque"
@@ -16,6 +19,7 @@ const (
 type queueOperation interface {
 	Includes(op queueOperation) bool
 	IncludesKey(key string) bool
+	String() string
 }
 
 type queueOperationWithKey interface {
@@ -34,6 +38,10 @@ func (o *queueOperationSet[T]) GetType() int {
 
 func (o *queueOperationSet[T]) GetKey() string {
 	return o.Key
+}
+
+func (o *queueOperationSet[T]) String() string {
+	return fmt.Sprintf("Set(%s)", o.Key)
 }
 
 func (o *queueOperationSet[T]) Includes(op queueOperation) bool {
@@ -60,6 +68,10 @@ func (o *queueOperationDelete) GetKey() string {
 	return o.Key
 }
 
+func (o *queueOperationDelete) String() string {
+	return fmt.Sprintf("Delete(%s)", o.Key)
+}
+
 func (o *queueOperationDelete) Includes(op queueOperation) bool {
 	if op, ok := op.(queueOperationWithKey); ok {
 		return o.Key == op.GetKey()
@@ -80,6 +92,11 @@ func (o *queueOperationDeletePredicate) GetType() int {
 	return QueueOperationDeletePredicate
 }
 
+func (o *queueOperationDeletePredicate) String() string {
+	funcName := runtime.FuncForPC(reflect.ValueOf(o.Predicate).Pointer()).Name()
+	return fmt.Sprintf("DeletePredicate(%s)", funcName)
+}
+
 func (o *queueOperationDeletePredicate) Includes(op queueOperation) bool {
 	if op, ok := op.(queueOperationWithKey); ok {
 		return o.Predicate(op.GetKey())
@@ -96,6 +113,10 @@ type queueOperationPurge struct{}
 
 func (o *queueOperationPurge) GetType() int {
 	return QueueOperationPurge
+}
+
+func (o *queueOperationPurge) String() string {
+	return "Purge()"
 }
 
 func (o *queueOperationPurge) Includes(op queueOperation) bool {

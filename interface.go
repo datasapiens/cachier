@@ -375,34 +375,35 @@ func (c *Cache[T]) setIndirectNoLock(key string, value *T, linkResolver func(*T)
 func (c *Cache[T]) writeLoop() {
 	var lastStatsTime time.Time
 	for range time.Tick(c.writeInterval) {
-		if time.Since(lastStatsTime) >= c.statsInterval {
-			lastStatsTime = time.Now()
-			queueSize, valuesSize := c.writeQueue.GetStats()
-			c.logger.Print("Write queue stats: ", queueSize, " operations, ", valuesSize, " values")
-		}
 		for {
 			op, ok := c.writeQueue.StartWriting()
 			if !ok {
 				break // No more items to process
 			}
 
+			var err error
+
 			switch op := op.(type) {
 			case *queueOperationSet[T]:
-				err := c.engine.Set(op.Key, op.Value)
+				err = c.engine.Set(op.Key, op.Value)
 
 				c.writeQueue.DoneWriting(err == nil)
 
 			case *queueOperationDelete:
-				err := c.engine.Delete(op.Key)
+				err = c.engine.Delete(op.Key)
 
 				c.writeQueue.DoneWriting(err == nil)
 
 			case *queueOperationDeletePredicate:
-				keys, err := c.engine.Keys()
+				var keys []string
+				keys, err = c.engine.Keys()
 				if err == nil {
 					for _, key := range keys {
 						if op.Predicate(key) {
 							err = c.engine.Delete(key)
+							if err != nil {
+								break
+							}
 						}
 					}
 				}
@@ -413,6 +414,19 @@ func (c *Cache[T]) writeLoop() {
 				err := c.engine.Purge()
 
 				c.writeQueue.DoneWriting(err == nil)
+			}
+
+			if err != nil {
+				c.logger.Print("write loop error: ", err.Error(), " for operation: ", op.String())
+				break
+			}
+		}
+
+		if time.Since(lastStatsTime) >= c.statsInterval {
+			queueSize, valuesSize := c.writeQueue.GetStats()
+			if queueSize > 0 || valuesSize > 0 {
+				lastStatsTime = time.Now()
+				c.logger.Print("Write queue stats: ", queueSize, " operations, ", valuesSize, " values")
 			}
 		}
 	}
