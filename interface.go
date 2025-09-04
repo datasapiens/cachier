@@ -378,7 +378,7 @@ func (c *Cache[T]) writeLoop() {
 		if time.Since(lastStatsTime) >= c.statsInterval {
 			lastStatsTime = time.Now()
 			queueSize, valuesSize := c.writeQueue.GetStats()
-			c.logger.Print("Write queue stats: %d operations, %d values", queueSize, valuesSize)
+			c.logger.Print("Write queue stats: ", queueSize, " operations, ", valuesSize, " values")
 		}
 		for {
 			op, ok := c.writeQueue.StartWriting()
