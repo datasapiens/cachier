@@ -280,13 +280,13 @@ func (c *Cache[T]) Delete(key string) error {
 	mutex := c.computeLocks.Lock(key)
 	defer c.computeLocks.Unlock(key, mutex)
 	c.writeQueue.Delete(key) // Remove from write queue
-	return c.engine.Delete(key)
+	return nil
 }
 
 // Purge removes all records from the cache
 func (c *Cache[T]) Purge() error {
 	c.writeQueue.Purge() // Clear the write queue
-	return c.engine.Purge()
+	return nil
 }
 
 // Keys returns all the keys in cache
