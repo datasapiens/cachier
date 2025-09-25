@@ -1,6 +1,9 @@
 package cachier
 
 import (
+	"fmt"
+	"reflect"
+	"runtime"
 	"sync"
 
 	"github.com/gammazero/deque"
@@ -16,6 +19,7 @@ const (
 type queueOperation interface {
 	Includes(op queueOperation) bool
 	IncludesKey(key string) bool
+	String() string
 }
 
 type queueOperationWithKey interface {
@@ -34,6 +38,10 @@ func (o *queueOperationSet[T]) GetType() int {
 
 func (o *queueOperationSet[T]) GetKey() string {
 	return o.Key
+}
+
+func (o *queueOperationSet[T]) String() string {
+	return fmt.Sprintf("Set(%s)", o.Key)
 }
 
 func (o *queueOperationSet[T]) Includes(op queueOperation) bool {
@@ -60,6 +68,10 @@ func (o *queueOperationDelete) GetKey() string {
 	return o.Key
 }
 
+func (o *queueOperationDelete) String() string {
+	return fmt.Sprintf("Delete(%s)", o.Key)
+}
+
 func (o *queueOperationDelete) Includes(op queueOperation) bool {
 	if op, ok := op.(queueOperationWithKey); ok {
 		return o.Key == op.GetKey()
@@ -80,6 +92,11 @@ func (o *queueOperationDeletePredicate) GetType() int {
 	return QueueOperationDeletePredicate
 }
 
+func (o *queueOperationDeletePredicate) String() string {
+	funcName := runtime.FuncForPC(reflect.ValueOf(o.Predicate).Pointer()).Name()
+	return fmt.Sprintf("DeletePredicate(%s)", funcName)
+}
+
 func (o *queueOperationDeletePredicate) Includes(op queueOperation) bool {
 	if op, ok := op.(queueOperationWithKey); ok {
 		return o.Predicate(op.GetKey())
@@ -96,6 +113,10 @@ type queueOperationPurge struct{}
 
 func (o *queueOperationPurge) GetType() int {
 	return QueueOperationPurge
+}
+
+func (o *queueOperationPurge) String() string {
+	return "Purge()"
 }
 
 func (o *queueOperationPurge) Includes(op queueOperation) bool {
@@ -247,6 +268,10 @@ func (q *writeQueue[T]) StartWriting() (queueOperation, bool) {
 	q.Lock()
 	defer q.Unlock()
 
+	if q.CurrentlyWriting != nil {
+		panic("write operation already in progress")
+	}
+
 	if q.Queue.Len() == 0 {
 		return nil, false
 	}
@@ -262,10 +287,27 @@ func (q *writeQueue[T]) DoneWriting(ok bool) {
 	q.Lock()
 	defer q.Unlock()
 
-	if ok && q.Queue.Len() > 0 {
+	// The queue could have been changed since the StartWriting call,
+	// so we need to check if the first operation is the same as the current writing operation
+	if ok && q.Queue.Len() > 0 && q.Queue.At(0) == q.CurrentlyWriting {
 		// Remove the completed operation from the front of the queue
 		q.Queue.PopFront()
+
+		// If it's a set operation, and the value was not overridden
+		if op, ok := q.CurrentlyWriting.(*queueOperationSet[T]); ok {
+			if value, ok := q.Values[op.Key]; ok && value == op.Value {
+				delete(q.Values, op.Key)
+			}
+		}
 	}
 
 	q.CurrentlyWriting = nil // Reset the current writing operation
+}
+
+// GetStats returns the current size of the queue
+func (q *writeQueue[T]) GetStats() (int, int) {
+	q.Lock()
+	defer q.Unlock()
+
+	return q.Queue.Len(), len(q.Values)
 }

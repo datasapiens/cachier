@@ -22,7 +22,7 @@ func InitLRUCache[T any]() *Cache[T] {
 	if err != nil {
 		panic(err)
 	}
-	return MakeCache[T](lc)
+	return MakeCache[T](lc, &DummyLogger{})
 }
 
 func InitRedis() (*redis.Client, error) {
@@ -57,7 +57,7 @@ func InitRedisCache[T any]() (*Cache[T], error) {
 		nil,
 	)
 
-	return MakeCache[T](rc), err
+	return MakeCache[T](rc, &DummyLogger{}), err
 }
 
 func RandStringRunes(n int) string {
@@ -120,7 +120,7 @@ func TestCacheWithSubCache(t *testing.T) {
 	c := MakeCache[float64](&CacheWithSubcache[float64]{
 		Cache:    rc,
 		Subcache: lru,
-	})
+	}, &DummyLogger{})
 
 	dosCache(c, t, 1)
 }
@@ -146,7 +146,7 @@ func TestRedisCacheWithCompressionJSON(t *testing.T) {
 		engine,
 	)
 
-	cache := MakeCache[string](rc)
+	cache := MakeCache[string](rc, &DummyLogger{})
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
 	input := fmt.Sprintf("{\"key\":\"%s\"", string(r))
@@ -206,7 +206,7 @@ func TestRedisCacheWithCompressionGOB(t *testing.T) {
 		engine,
 	)
 
-	cache := MakeCache[A](rc)
+	cache := MakeCache[A](rc, &DummyLogger{})
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
 	key := "hello:world:gob"
@@ -237,7 +237,7 @@ func TestLRUCacheWithCompressionJSON(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	cache := MakeCache[string](lc)
+	cache := MakeCache[string](lc, &DummyLogger{})
 
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
@@ -289,7 +289,7 @@ func TestRedisCacheWithCompressionJSONArray(t *testing.T) {
 		engine,
 	)
 
-	cache := MakeCache[[]A](rc)
+	cache := MakeCache[[]A](rc, &DummyLogger{})
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
 	a := A{
@@ -338,7 +338,7 @@ func TestLRUCacheWithCompressionJSONArray(t *testing.T) {
 		Key: string(r),
 	}
 
-	cache := MakeCache[[]A](lc)
+	cache := MakeCache[[]A](lc, &DummyLogger{})
 	data := []A{a}
 
 	key := "hello:world:json:3"
@@ -378,7 +378,7 @@ func TestLRUCacheWithCompressionGOB(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	cache := MakeCache[A](lc)
+	cache := MakeCache[A](lc, &DummyLogger{})
 	s := "hello world"
 	r := []byte(strings.Repeat(s, 100))
 	key := "hello:world:gob"

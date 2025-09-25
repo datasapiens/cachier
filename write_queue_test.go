@@ -769,3 +769,196 @@ func TestWriteQueue_LargeOperations(t *testing.T) {
 	expectedRemainingOps := numOps - expectedMatches + 1
 	assert.Equal(t, expectedRemainingOps, q.Queue.Len())
 }
+
+// TestWriteQueue_ValuesClearing verifies that values are properly cleared from the Values field
+func TestWriteQueue_ValuesClearing(t *testing.T) {
+	q := newWriteQueue[string]()
+
+	// Set up initial values
+	value1 := "value1"
+	value2 := "value2"
+	value3 := "value3"
+	value4 := "value4"
+	value5 := "value5"
+
+	q.Set("key1", &value1)
+	q.Set("key2", &value2)
+	q.Set("key3", &value3)
+	q.Set("key4", &value4)
+	q.Set("key5", &value5)
+
+	// Verify all values are in the Values map
+	assert.Equal(t, 5, len(q.Values))
+	assert.Contains(t, q.Values, "key1")
+	assert.Contains(t, q.Values, "key2")
+	assert.Contains(t, q.Values, "key3")
+	assert.Contains(t, q.Values, "key4")
+	assert.Contains(t, q.Values, "key5")
+
+	// Test 1: Delete single key - should remove from Values
+	q.Delete("key1")
+
+	// Verify key1 is removed from Values but others remain
+	assert.Equal(t, 4, len(q.Values))
+	assert.NotContains(t, q.Values, "key1")
+	assert.Contains(t, q.Values, "key2")
+	assert.Contains(t, q.Values, "key3")
+	assert.Contains(t, q.Values, "key4")
+	assert.Contains(t, q.Values, "key5")
+
+	// Test 2: DeletePredicate - should remove matching keys from Values
+	predicate := func(key string) bool {
+		return strings.HasSuffix(key, "2") || strings.HasSuffix(key, "4")
+	}
+	q.DeletePredicate(predicate)
+
+	// Verify key2 and key4 are removed from Values
+	assert.Equal(t, 2, len(q.Values))
+	assert.NotContains(t, q.Values, "key1") // already deleted
+	assert.NotContains(t, q.Values, "key2") // deleted by predicate
+	assert.Contains(t, q.Values, "key3")    // should remain
+	assert.NotContains(t, q.Values, "key4") // deleted by predicate
+	assert.Contains(t, q.Values, "key5")    // should remain
+
+	// Test 3: Add more values after deletions
+	value6 := "value6"
+	value7 := "value7"
+	q.Set("key6", &value6)
+	q.Set("key7", &value7)
+
+	// Verify new values are added to Values
+	assert.Equal(t, 4, len(q.Values))
+	assert.Contains(t, q.Values, "key3")
+	assert.Contains(t, q.Values, "key5")
+	assert.Contains(t, q.Values, "key6")
+	assert.Contains(t, q.Values, "key7")
+
+	// Test 4: Purge - should clear all Values
+	q.Purge()
+
+	// Verify Values map is completely cleared
+	assert.Equal(t, 0, len(q.Values))
+	assert.NotContains(t, q.Values, "key3")
+	assert.NotContains(t, q.Values, "key5")
+	assert.NotContains(t, q.Values, "key6")
+	assert.NotContains(t, q.Values, "key7")
+
+	// Test 5: Verify Values map is properly reinitialized after purge
+	value8 := "value8"
+	q.Set("key8", &value8)
+
+	// Should be able to add new values after purge
+	assert.Equal(t, 1, len(q.Values))
+	assert.Contains(t, q.Values, "key8")
+	assert.Equal(t, &value8, q.Values["key8"])
+
+	// Test 6: Verify Values clearing doesn't affect queue operations
+	// The queue should still contain the operations even though Values is cleared
+	assert.Greater(t, q.Queue.Len(), 0, "Queue should still contain operations after Values clearing")
+}
+
+// TestWriteQueue_ValuesRemovedAfterWrite verifies that values are removed from Values field after successful write
+func TestWriteQueue_ValuesRemovedAfterWrite(t *testing.T) {
+	q := newWriteQueue[string]()
+
+	// Set up initial values
+	value1 := "value1"
+	value2 := "value2"
+	value3 := "value3"
+
+	q.Set("key1", &value1)
+	q.Set("key2", &value2)
+	q.Set("key3", &value3)
+
+	// Verify all values are in the Values map
+	assert.Equal(t, 3, len(q.Values))
+	assert.Contains(t, q.Values, "key1")
+	assert.Contains(t, q.Values, "key2")
+	assert.Contains(t, q.Values, "key3")
+
+	// Start writing the first operation (key1)
+	op1, ok := q.StartWriting()
+	assert.True(t, ok)
+	assert.NotNil(t, op1)
+
+	// Verify the operation is for key1
+	setOp1, isSet := op1.(*queueOperationSet[string])
+	assert.True(t, isSet)
+	assert.Equal(t, "key1", setOp1.Key)
+
+	// Values should still contain key1 (not yet written)
+	assert.Contains(t, q.Values, "key1")
+
+	// Complete the write successfully
+	q.DoneWriting(true)
+
+	// After successful write, key1 should be removed from Values
+	assert.Equal(t, 2, len(q.Values))
+	assert.NotContains(t, q.Values, "key1")
+	assert.Contains(t, q.Values, "key2")
+	assert.Contains(t, q.Values, "key3")
+
+	// Start writing the second operation (key2)
+	op2, ok := q.StartWriting()
+	assert.True(t, ok)
+	assert.NotNil(t, op2)
+
+	// Verify the operation is for key2
+	setOp2, isSet := op2.(*queueOperationSet[string])
+	assert.True(t, isSet)
+	assert.Equal(t, "key2", setOp2.Key)
+
+	// Values should still contain key2 (not yet written)
+	assert.Contains(t, q.Values, "key2")
+
+	// Complete the write successfully
+	q.DoneWriting(true)
+
+	// After successful write, key2 should be removed from Values
+	assert.Equal(t, 1, len(q.Values))
+	assert.NotContains(t, q.Values, "key1")
+	assert.NotContains(t, q.Values, "key2")
+	assert.Contains(t, q.Values, "key3")
+
+	// Test failed write - value should remain in Values
+	op3, ok := q.StartWriting()
+	assert.True(t, ok)
+	assert.NotNil(t, op3)
+
+	// Verify the operation is for key3
+	setOp3, isSet := op3.(*queueOperationSet[string])
+	assert.True(t, isSet)
+	assert.Equal(t, "key3", setOp3.Key)
+
+	// Values should still contain key3 (not yet written)
+	assert.Contains(t, q.Values, "key3")
+
+	// Complete the write with failure
+	q.DoneWriting(false)
+
+	// After failed write, key3 should still be in Values (operation remains in queue)
+	assert.Equal(t, 1, len(q.Values))
+	assert.NotContains(t, q.Values, "key1")
+	assert.NotContains(t, q.Values, "key2")
+	assert.Contains(t, q.Values, "key3")
+
+	// Verify the operation is still in the queue (not removed on failure)
+	assert.Equal(t, 1, q.Queue.Len())
+
+	// Try writing key3 again (should be the same operation)
+	op4, ok := q.StartWriting()
+	assert.True(t, ok)
+	assert.Equal(t, op3, op4) // Should be the same operation
+
+	// This time complete successfully
+	q.DoneWriting(true)
+
+	// Now key3 should be removed from Values
+	assert.Equal(t, 0, len(q.Values))
+	assert.NotContains(t, q.Values, "key1")
+	assert.NotContains(t, q.Values, "key2")
+	assert.NotContains(t, q.Values, "key3")
+
+	// Queue should be empty
+	assert.Equal(t, 0, q.Queue.Len())
+}
