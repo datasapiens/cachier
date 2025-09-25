@@ -174,6 +174,10 @@ func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), vali
 		return value, nil
 	}
 
+	if err != nil && err != ErrNotFound {
+		c.logger.Error("error getting value from cache: ", err)
+	}
+
 	value, evaluatorErr := evaluator()
 
 	if evaluatorErr == nil {
@@ -184,15 +188,13 @@ func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), vali
 				c.setIndirectNoLock(key, value, linkResolver, linkGenerator)
 			}
 
-			return value, nil
 		}
-	} else {
-		// evalutation error
-		value = nil
-		err = evaluatorErr
+
+		// ignore cache get error
+		return value, nil
 	}
 
-	return value, err
+	return nil, evaluatorErr
 }
 
 // DeletePredicate deletes all keys matching the supplied predicate, returns number of deleted keys
@@ -280,13 +282,13 @@ func (c *Cache[T]) Delete(key string) error {
 	mutex := c.computeLocks.Lock(key)
 	defer c.computeLocks.Unlock(key, mutex)
 	c.writeQueue.Delete(key) // Remove from write queue
-	return c.engine.Delete(key)
+	return nil
 }
 
 // Purge removes all records from the cache
 func (c *Cache[T]) Purge() error {
 	c.writeQueue.Purge() // Clear the write queue
-	return c.engine.Purge()
+	return nil
 }
 
 // Keys returns all the keys in cache
