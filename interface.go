@@ -158,8 +158,9 @@ func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(*T) strin
 }
 
 // GetOrComputeEx tries to get value from cache.
-// If not found, it computes the value using provided evaluator function and stores it into cache.
-// In case of other errors the value is evaluated but not stored in the cache.
+// If the cache has no servable value (miss, wrong type, transient engine
+// error or validator rejection), it computes the value using the provided
+// evaluator function and stores it into cache (subject to writeApprover).
 // Additional parameters (can be nil):
 // validator - validates cache records, on false evaluator will be run again (new results will not be validated)
 // linkResolver - checks if cached value is a link and returns the key it's pointing to

@@ -77,7 +77,7 @@ func (lc *LRUCache) Get(key string) (v interface{}, err error) {
 	}
 
 	output, err := lc.decompress(key, value)
-	if err != nil {
+	if err != nil && err != ErrNotFound {
 		lc.logger.Error("lru: error decompressing data: ", err)
 	}
 	return output, err
@@ -122,7 +122,7 @@ func (lc *LRUCache) Peek(key string) (v interface{}, err error) {
 	}
 
 	output, err := lc.decompress(key, value)
-	if err != nil {
+	if err != nil && err != ErrNotFound {
 		lc.logger.Error("lru: error decompressing data: ", err)
 	}
 	return output, err
