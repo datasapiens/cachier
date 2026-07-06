@@ -97,7 +97,11 @@ func (lc *LRUCache) decompress(key string, value interface{}) (interface{}, erro
 	}
 
 	var result interface{}
-	lc.unmarshal(input, &result)
+	if err := lc.unmarshal(input, &result); err != nil {
+		lc.logger.Error("lru: error unmarshaling data with key: ", key, " error: ", err)
+		lc.Delete(key)
+		return nil, ErrNotFound
+	}
 	return result, nil
 }
 

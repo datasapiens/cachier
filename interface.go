@@ -22,7 +22,6 @@ package cachier
 
 import (
 	"errors"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -179,22 +178,18 @@ func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), vali
 	}
 
 	value, evaluatorErr := evaluator()
-
-	if evaluatorErr == nil {
-		// value evaluted correctly
-		if err == ErrNotFound {
-			if writeApprover == nil || writeApprover(value) {
-				// Key not found in cache
-				c.setIndirectNoLock(key, value, linkResolver, linkGenerator)
-			}
-
-		}
-
-		// ignore cache get error
-		return value, nil
+	if evaluatorErr != nil {
+		return nil, evaluatorErr
 	}
 
-	return nil, evaluatorErr
+	// Reaching the evaluator means the cache had no servable value (miss,
+	// wrong type, transient engine error or validator rejection), so the
+	// fresh value always replaces whatever is stored.
+	if writeApprover == nil || writeApprover(value) {
+		c.setIndirectNoLock(key, value, linkResolver, linkGenerator)
+	}
+
+	return value, nil
 }
 
 // DeletePredicate deletes all keys matching the supplied predicate, returns number of deleted keys
@@ -265,16 +260,11 @@ func (c *Cache[T]) Peek(key string) (*T, error) {
 	}
 
 	untypedValue, err := c.engine.Peek(key)
-	if err == nil {
-		typedValue, ok := untypedValue.(T)
-		if ok {
-			return &typedValue, nil
-		} else {
-			err = ErrNotFound
-		}
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, err
+	return assertCached[T](untypedValue)
 }
 
 // Delete removes a key from cache
@@ -311,23 +301,25 @@ func (c *Cache[T]) getNoLock(key string) (*T, error) {
 	}
 
 	untypedValue, err := c.engine.Get(key)
-	if err == nil {
-		if reflect.ValueOf(value).Kind() == reflect.Ptr {
-			typedValue, ok := untypedValue.(*T)
-			if !ok {
-				return nil, ErrWrongDataType
-			}
-			return typedValue, nil
-		} else {
-			typedValue, ok := untypedValue.(T)
-			if !ok {
-				return nil, ErrWrongDataType
-			}
-			return &typedValue, nil
-		}
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, err
+	return assertCached[T](untypedValue)
+}
+
+// assertCached converts a value read from a cache engine into *T. Engines
+// return either the raw *T that was stored (e.g. LRU without compression) or
+// a value produced by an unmarshal callback, which may be T or *T depending
+// on the callback's convention — all of them must be servable.
+func assertCached[T any](v interface{}) (*T, error) {
+	if typedValue, ok := v.(*T); ok {
+		return typedValue, nil
+	}
+	if typedValue, ok := v.(T); ok {
+		return &typedValue, nil
+	}
+	return nil, ErrWrongDataType
 }
 
 // setNoLock stores a key-value pair into cache
