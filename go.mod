@@ -7,9 +7,9 @@ require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/cloudflare/golz4 v0.0.0-20240916140612-caecf3c00c06
 	github.com/gammazero/deque v1.1.0
-	github.com/go-redis/redis/v8 v8.11.5
 	github.com/hashicorp/golang-lru v1.0.2
 	github.com/klauspost/compress v1.17.11
+	github.com/redis/go-redis/v9 v9.17.2
 	github.com/stretchr/testify v1.9.0
 )
 
