@@ -247,6 +247,7 @@ func TestDeletePredicate_WaitsForInFlightEngineWrite(t *testing.T) {
 		<-setRelease
 	}
 	c := MakeCache[testEntry](engine, DummyLogger{})
+	t.Cleanup(c.Close)
 
 	require.NoError(t, c.Set("k", &testEntry{ID: 1}))
 	<-setStarted // the write loop is now blocked inside engine.Set("k")
@@ -274,6 +275,7 @@ func TestWriteLoop_FailingPurgeYieldsToNextTick(t *testing.T) {
 	engine.purgeErr = errEngineBoom
 	logger := &recordingLogger{}
 	c := MakeCache[testEntry](engine, logger)
+	t.Cleanup(c.Close)
 
 	// Seed the queue directly: after M12, Cache.Purge is synchronous and
 	// never enqueues, but the write loop must still handle a queued purge.
@@ -281,9 +283,11 @@ func TestWriteLoop_FailingPurgeYieldsToNextTick(t *testing.T) {
 
 	time.Sleep(2500 * time.Millisecond)
 
+	// The generous upper bound absorbs tick catch-up after CI scheduler
+	// stalls; a hot-spinning loop produces millions of calls in this window.
 	calls := engine.purgeCalls.Load()
 	assert.GreaterOrEqual(t, calls, int32(1), "the queued purge must be attempted")
-	assert.LessOrEqual(t, calls, int32(3), "a failing purge must be retried once per tick, not hot-spun within one tick")
+	assert.LessOrEqual(t, calls, int32(5), "a failing purge must be retried once per tick, not hot-spun within one tick")
 	assert.NotZero(t, logger.countContaining("write loop error"), "the purge failure must be logged")
 }
 

@@ -96,13 +96,20 @@ func MakeCache[T any](engine CacheEngine, logger Logger) *Cache[T] {
 // multiple goroutines. All cache methods keep working after Close — reads,
 // computes and the synchronous invalidations are unaffected — but writes
 // enqueued after the final drain are never flushed to the engine, so stop
-// producing writes before calling Close.
+// producing writes before calling Close. On a Cache built without
+// MakeCache (in-package tests) there is no write loop and Close is a no-op.
 func (c *Cache[T]) Close() {
 	c.closeOnce.Do(func() {
-		c.ticker.Stop()
-		close(c.done)
+		if c.ticker != nil {
+			c.ticker.Stop()
+		}
+		if c.done != nil {
+			close(c.done)
+		}
 	})
-	<-c.stopped
+	if c.stopped != nil {
+		<-c.stopped
+	}
 }
 
 // GetOrCompute tries to get value from cache.

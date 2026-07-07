@@ -213,7 +213,9 @@ func (q *writeQueue[T]) TrySet(key string, value *T, token *computeToken) bool {
 }
 
 // RegisterToken creates the active compute token for key. Callers must hold
-// key's compute lock, which guarantees at most one live token per key.
+// key's compute lock from before RegisterToken until after DeregisterToken
+// — that discipline is what guarantees at most one live token per key, so a
+// new registration never overwrites a token another compute still holds.
 func (q *writeQueue[T]) RegisterToken(key string) *computeToken {
 	q.Lock()
 	defer q.Unlock()
@@ -223,9 +225,10 @@ func (q *writeQueue[T]) RegisterToken(key string) *computeToken {
 	return token
 }
 
-// DeregisterToken removes key's token once its compute has finished. The
-// identity check keeps a stale caller from ever removing a newer compute's
-// token.
+// DeregisterToken removes key's token once its compute has finished. Must
+// run before the caller releases key's compute lock (see RegisterToken);
+// the identity check additionally keeps a stale caller from ever removing
+// a newer compute's token should that discipline ever be broken.
 func (q *writeQueue[T]) DeregisterToken(key string, token *computeToken) {
 	q.Lock()
 	defer q.Unlock()
