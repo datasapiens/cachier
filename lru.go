@@ -77,7 +77,7 @@ func (lc *LRUCache) Get(key string) (v interface{}, err error) {
 	}
 
 	output, err := lc.decompress(key, value)
-	if err != nil {
+	if err != nil && err != ErrNotFound {
 		lc.logger.Error("lru: error decompressing data: ", err)
 	}
 	return output, err
@@ -97,7 +97,11 @@ func (lc *LRUCache) decompress(key string, value interface{}) (interface{}, erro
 	}
 
 	var result interface{}
-	lc.unmarshal(input, &result)
+	if err := lc.unmarshal(input, &result); err != nil {
+		lc.logger.Error("lru: error unmarshaling data with key: ", key, " error: ", err)
+		lc.Delete(key)
+		return nil, ErrNotFound
+	}
 	return result, nil
 }
 
@@ -118,7 +122,7 @@ func (lc *LRUCache) Peek(key string) (v interface{}, err error) {
 	}
 
 	output, err := lc.decompress(key, value)
-	if err != nil {
+	if err != nil && err != ErrNotFound {
 		lc.logger.Error("lru: error decompressing data: ", err)
 	}
 	return output, err
