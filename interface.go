@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/datasapiens/cachier/utils"
@@ -58,6 +59,17 @@ type Cache[T any] struct {
 	writeInterval time.Duration
 	statsInterval time.Duration
 	logger        Logger
+
+	// engineMu serializes every engine mutation: each write-loop cycle
+	// (StartWriting-engine-op-DoneWriting, atomic as a unit) and every
+	// synchronous invalidation's discard+engine pass. It is released
+	// between write cycles so invalidations never wait for a full drain.
+	engineMu sync.Mutex
+
+	ticker    *time.Ticker
+	done      chan struct{}
+	stopped   chan struct{}
+	closeOnce sync.Once
 }
 
 // MakeCache creates cache with provided engine
@@ -70,10 +82,27 @@ func MakeCache[T any](engine CacheEngine, logger Logger) *Cache[T] {
 		statsInterval: 60 * time.Second,        // Default stats interval
 		logger:        logger,
 	}
+	cache.ticker = time.NewTicker(cache.writeInterval)
+	cache.done = make(chan struct{})
+	cache.stopped = make(chan struct{})
 
 	go cache.writeLoop() // Start the write loop in a goroutine
 
 	return cache
+}
+
+// Close stops the background write loop, waiting for it to perform one
+// final best-effort drain and exit. Idempotent and safe to call from
+// multiple goroutines. All cache methods keep working after Close — reads,
+// computes and the synchronous invalidations are unaffected — but writes
+// enqueued after the final drain are never flushed to the engine, so stop
+// producing writes before calling Close.
+func (c *Cache[T]) Close() {
+	c.closeOnce.Do(func() {
+		c.ticker.Stop()
+		close(c.done)
+	})
+	<-c.stopped
 }
 
 // GetOrCompute tries to get value from cache.
@@ -87,17 +116,20 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 		return value, nil
 	}
 
+	token := c.writeQueue.RegisterToken(key)
 	calculatedValue, evaluatorErr := evaluator()
 
 	if evaluatorErr == nil {
 		// Key not found on cache
 		go func() {
-			c.setNoLock(key, calculatedValue)
+			c.setNoLock(key, calculatedValue, token)
+			c.writeQueue.DeregisterToken(key, token)
 			c.computeLocks.Unlock(key, mutex)
 		}()
 		return calculatedValue, nil
 	} else {
 		// evalutation error
+		c.writeQueue.DeregisterToken(key, token)
 		c.computeLocks.Unlock(key, mutex)
 		calculatedValue = nil
 		err = evaluatorErr
@@ -109,7 +141,7 @@ func (c *Cache[T]) GetOrCompute(key string, evaluator func() (*T, error)) (*T, e
 func (c *Cache[T]) Set(key string, value *T) error {
 	mutex := c.computeLocks.Lock(key)
 	defer c.computeLocks.Unlock(key, mutex)
-	return c.setNoLock(key, value)
+	return c.setNoLock(key, value, nil)
 }
 
 // Get gets a cached value by key
@@ -139,22 +171,7 @@ func (c *Cache[T]) GetIndirect(key string, linkResolver func(*T) string) (*T, er
 func (c *Cache[T]) SetIndirect(key string, value *T, linkResolver func(*T) string, linkGenerator func(*T) *T) error {
 	mutex := c.computeLocks.Lock(key)
 	defer c.computeLocks.Unlock(key, mutex)
-	if linkGenerator != nil && linkResolver != nil {
-		if linkValue := linkGenerator(value); linkValue != nil {
-			link := linkResolver(linkValue)
-			if link != key {
-				lock := c.computeLocks.Lock(link)
-				defer c.computeLocks.Unlock(link, lock)
-				if err := c.setNoLock(key, linkValue); err != nil {
-					return err
-				}
-			}
-
-			return c.setNoLock(link, value)
-		}
-	}
-
-	return c.setNoLock(key, value)
+	return c.setIndirectNoLock(key, value, linkResolver, linkGenerator, nil)
 }
 
 // GetOrComputeEx tries to get value from cache.
@@ -178,6 +195,9 @@ func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), vali
 		c.logger.Error("error getting value from cache: ", err)
 	}
 
+	token := c.writeQueue.RegisterToken(key)
+	defer c.writeQueue.DeregisterToken(key, token)
+
 	value, evaluatorErr := evaluator()
 	if evaluatorErr != nil {
 		return nil, evaluatorErr
@@ -185,22 +205,43 @@ func (c *Cache[T]) GetOrComputeEx(key string, evaluator func() (*T, error), vali
 
 	// Reaching the evaluator means the cache had no servable value (miss,
 	// wrong type, transient engine error or validator rejection), so the
-	// fresh value always replaces whatever is stored.
+	// fresh value always replaces whatever is stored — unless an
+	// invalidation fenced this compute while it was in flight.
 	if writeApprover == nil || writeApprover(value) {
-		c.setIndirectNoLock(key, value, linkResolver, linkGenerator)
+		c.setIndirectNoLock(key, value, linkResolver, linkGenerator, token)
 	}
 
 	return value, nil
 }
 
-// DeletePredicate deletes all keys matching the supplied predicate, returns number of deleted keys
+// DeletePredicate synchronously deletes all keys matching the supplied
+// predicate. Queued writes for matching keys are discarded and in-flight
+// computes for them are fenced: their write-back is skipped while the
+// computed value is still returned to their callers. Returns the first
+// engine error; on failure some matching keys may already have been
+// deleted and nothing is retried — the caller owns the retry decision.
 func (c *Cache[T]) DeletePredicate(pred Predicate) error {
-	c.writeQueue.DeletePredicate(pred)
+	c.engineMu.Lock()
+	defer c.engineMu.Unlock()
 
+	c.writeQueue.DiscardPredicate(pred)
+
+	keys, err := c.engine.Keys()
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if pred(key) {
+			if err := c.engine.Delete(key); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
-// DeleteWithPrefix removes all keys that start with given prefix, returns number of deleted keys
+// DeleteWithPrefix synchronously removes all keys that start with the given
+// prefix. Same fencing and error semantics as DeletePredicate.
 func (c *Cache[T]) DeleteWithPrefix(prefix string) error {
 	pred := func(s string) bool {
 		return strings.HasPrefix(s, prefix)
@@ -209,7 +250,8 @@ func (c *Cache[T]) DeleteWithPrefix(prefix string) error {
 	return c.DeletePredicate(pred)
 }
 
-// DeleteRegExp deletes all keys matching the supplied regexp, returns number of deleted keys
+// DeleteRegExp synchronously deletes all keys matching the supplied regexp.
+// Same fencing and error semantics as DeletePredicate.
 func (c *Cache[T]) DeleteRegExp(pattern string) error {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -268,18 +310,31 @@ func (c *Cache[T]) Peek(key string) (*T, error) {
 	return assertCached[T](untypedValue)
 }
 
-// Delete removes a key from cache
+// Delete synchronously removes a key from the cache engine, discarding any
+// queued write for it first, and returns the engine's real error. It holds
+// the key's compute lock, so no compute for this key can be in flight
+// (GetOrCompute's write-back goroutine holds that lock until it finishes).
+// Nothing is retried on failure — the caller owns the retry decision.
 func (c *Cache[T]) Delete(key string) error {
 	mutex := c.computeLocks.Lock(key)
 	defer c.computeLocks.Unlock(key, mutex)
-	c.writeQueue.Delete(key) // Remove from write queue
-	return nil
+
+	c.engineMu.Lock()
+	defer c.engineMu.Unlock()
+
+	c.writeQueue.Discard(key)
+	return c.engine.Delete(key)
 }
 
-// Purge removes all records from the cache
+// Purge synchronously removes all records from the cache, discarding every
+// queued write and fencing every in-flight compute. Returns the engine's
+// real error; nothing is retried on failure.
 func (c *Cache[T]) Purge() error {
-	c.writeQueue.Purge() // Clear the write queue
-	return nil
+	c.engineMu.Lock()
+	defer c.engineMu.Unlock()
+
+	c.writeQueue.DiscardPredicate(func(string) bool { return true })
+	return c.engine.Purge()
 }
 
 // Keys returns all the keys in cache
@@ -323,9 +378,11 @@ func assertCached[T any](v interface{}) (*T, error) {
 	return nil, ErrWrongDataType
 }
 
-// setNoLock stores a key-value pair into cache
-func (c *Cache[T]) setNoLock(key string, value *T) error {
-	c.writeQueue.Set(key, value)
+// setNoLock stores a key-value pair into cache. A non-nil token fences the
+// write: it is skipped when the token was invalidated by a concurrent
+// invalidation (H4).
+func (c *Cache[T]) setNoLock(key string, value *T, token *computeToken) error {
+	c.writeQueue.TrySet(key, value, token)
 	return nil
 }
 
@@ -346,75 +403,46 @@ func (c *Cache[T]) getIndirectNoLock(key string, linkResolver func(*T) string) (
 	return value, nil
 }
 
-// setIndirectNoLock sets cache key including intermediary links
-func (c *Cache[T]) setIndirectNoLock(key string, value *T, linkResolver func(*T) string, linkGenerator func(*T) *T) error {
+// setIndirectNoLock sets cache key including intermediary links. The token
+// (fencing the compute registered for key, nil for unfenced writes) gates
+// each leaf write; a predicate matching only the derived link key marks no
+// token, so such writes are only caught while still queued — a pre-existing
+// granularity limit of the link feature.
+func (c *Cache[T]) setIndirectNoLock(key string, value *T, linkResolver func(*T) string, linkGenerator func(*T) *T, token *computeToken) error {
 	if linkGenerator != nil && linkResolver != nil {
 		if linkValue := linkGenerator(value); linkValue != nil {
 			link := linkResolver(linkValue)
 			if link != key {
 				lock := c.computeLocks.Lock(link)
 				defer c.computeLocks.Unlock(link, lock)
-				if err := c.setNoLock(key, linkValue); err != nil {
+				if err := c.setNoLock(key, linkValue, token); err != nil {
 					return err
 				}
 			}
 
-			return c.setNoLock(link, value)
+			return c.setNoLock(link, value, token)
 		}
 	}
 
-	return c.setNoLock(key, value)
+	return c.setNoLock(key, value, token)
 }
 
 // writeLoop is a goroutine that processes the write queue.
 func (c *Cache[T]) writeLoop() {
+	defer close(c.stopped)
 	var lastStatsTime time.Time
-	for range time.Tick(c.writeInterval) {
-		for {
-			op, ok := c.writeQueue.StartWriting()
-			if !ok {
-				break // No more items to process
+	for {
+		select {
+		case <-c.done:
+			// Best-effort final drain so a graceful shutdown does not
+			// strand queued writes.
+			for c.runOneWriteCycle() {
 			}
+			return
+		case <-c.ticker.C:
+		}
 
-			var err error
-
-			switch op := op.(type) {
-			case *queueOperationSet[T]:
-				err = c.engine.Set(op.Key, op.Value)
-
-				c.writeQueue.DoneWriting(err == nil)
-
-			case *queueOperationDelete:
-				err = c.engine.Delete(op.Key)
-
-				c.writeQueue.DoneWriting(err == nil)
-
-			case *queueOperationDeletePredicate:
-				var keys []string
-				keys, err = c.engine.Keys()
-				if err == nil {
-					for _, key := range keys {
-						if op.Predicate(key) {
-							err = c.engine.Delete(key)
-							if err != nil {
-								break
-							}
-						}
-					}
-				}
-
-				c.writeQueue.DoneWriting(err == nil)
-
-			case *queueOperationPurge:
-				err := c.engine.Purge()
-
-				c.writeQueue.DoneWriting(err == nil)
-			}
-
-			if err != nil {
-				c.logger.Print("write loop error: ", err.Error(), " for operation: ", op.String())
-				break
-			}
+		for c.runOneWriteCycle() {
 		}
 
 		if time.Since(lastStatsTime) >= c.statsInterval {
@@ -425,4 +453,58 @@ func (c *Cache[T]) writeLoop() {
 			}
 		}
 	}
+}
+
+// runOneWriteCycle processes at most one queued operation under engineMu,
+// so a whole StartWriting-engine-op-DoneWriting cycle is atomic relative to
+// the synchronous invalidations (which also run under engineMu); engineMu
+// is released between cycles so an invalidation never waits for a full
+// queue drain. Returns false when the caller should stop draining: the
+// queue is empty, or the op failed, stays at the front, and must wait for
+// the next tick instead of hot-spinning. Only Set ops are enqueued since
+// the invalidations became synchronous; the other cases are kept
+// defensively until the queue is simplified.
+func (c *Cache[T]) runOneWriteCycle() bool {
+	c.engineMu.Lock()
+	defer c.engineMu.Unlock()
+
+	op, ok := c.writeQueue.StartWriting()
+	if !ok {
+		return false // No more items to process
+	}
+
+	var err error
+
+	switch op := op.(type) {
+	case *queueOperationSet[T]:
+		err = c.engine.Set(op.Key, op.Value)
+
+	case *queueOperationDelete:
+		err = c.engine.Delete(op.Key)
+
+	case *queueOperationDeletePredicate:
+		var keys []string
+		keys, err = c.engine.Keys()
+		if err == nil {
+			for _, key := range keys {
+				if op.Predicate(key) {
+					err = c.engine.Delete(key)
+					if err != nil {
+						break
+					}
+				}
+			}
+		}
+
+	case *queueOperationPurge:
+		err = c.engine.Purge()
+	}
+
+	c.writeQueue.DoneWriting(err == nil)
+
+	if err != nil {
+		c.logger.Print("write loop error: ", err.Error(), " for operation: ", op.String())
+		return false
+	}
+	return true
 }

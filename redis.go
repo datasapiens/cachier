@@ -150,19 +150,23 @@ func (rc *RedisCache) Delete(key string) error {
 	return rc.redisClient.Del(ctx, rc.keyPrefix+key).Err()
 }
 
-// Keys returns all the keys in the cache
+// redisScanCount is the COUNT hint for SCAN iterations.
+const redisScanCount = 1000
+
+// Keys returns all the keys in the cache. It iterates with SCAN instead of
+// KEYS so a large keyspace does not block the redis server for the whole
+// enumeration.
 func (rc *RedisCache) Keys() ([]string, error) {
-	keys, err := rc.redisClient.Keys(ctx, rc.keyPrefix+"*").Result()
-	if err != nil {
+	keys := make([]string, 0)
+	iter := rc.redisClient.Scan(ctx, 0, rc.keyPrefix+"*", redisScanCount).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, strings.TrimPrefix(iter.Val(), rc.keyPrefix))
+	}
+	if err := iter.Err(); err != nil {
 		return nil, err
 	}
 
-	strippedKeys := make([]string, 0, len(keys))
-	for _, key := range keys {
-		strippedKeys = append(strippedKeys, strings.TrimPrefix(key, rc.keyPrefix))
-	}
-
-	return strippedKeys, nil
+	return keys, nil
 }
 
 // Purge removes all the records from the cache

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -283,4 +285,65 @@ func TestWriteLoop_FailingPurgeYieldsToNextTick(t *testing.T) {
 	assert.GreaterOrEqual(t, calls, int32(1), "the queued purge must be attempted")
 	assert.LessOrEqual(t, calls, int32(3), "a failing purge must be retried once per tick, not hot-spun within one tick")
 	assert.NotZero(t, logger.countContaining("write loop error"), "the purge failure must be logged")
+}
+
+// Deterministic companion to the tick-based M10 test: one cycle = one
+// attempt, the failing op stays at the front for the next cycle.
+
+func TestRunOneWriteCycle_FailingOpStopsDrain(t *testing.T) {
+	engine := newFakeEngine()
+	engine.purgeErr = errEngineBoom
+	logger := &recordingLogger{}
+	c := newTestCache[testEntry](engine)
+	c.logger = logger
+
+	c.writeQueue.Purge()
+
+	assert.False(t, c.runOneWriteCycle(), "a failing op must stop the drain")
+	assert.Equal(t, int32(1), engine.purgeCalls.Load(), "exactly one attempt per cycle")
+	assert.False(t, c.runOneWriteCycle(), "the op stays at the front and is retried on the next cycle")
+	assert.Equal(t, int32(2), engine.purgeCalls.Load())
+	assert.Equal(t, 2, logger.countContaining("write loop error"), "every failed attempt must be logged")
+}
+
+// Close: stops the write loop after one final drain, idempotent, and the
+// synchronous invalidations keep working afterwards.
+
+func TestClose_StopsWriteLoopAndDrains(t *testing.T) {
+	engine := newFakeEngine()
+	c := MakeCache[testEntry](engine, DummyLogger{})
+
+	require.NoError(t, c.Set("k", &testEntry{ID: 1}))
+	c.Close()
+	assert.True(t, engine.has("k"), "Close must drain queued writes before stopping")
+
+	require.NoError(t, c.Delete("k"))
+	assert.False(t, engine.has("k"), "synchronous invalidations must keep working after Close")
+
+	require.NoError(t, c.Set("later", &testEntry{ID: 2}))
+	time.Sleep(1200 * time.Millisecond)
+	assert.False(t, engine.has("later"), "no write loop may flush writes enqueued after Close")
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	c := MakeCache[testEntry](newFakeEngine(), DummyLogger{})
+	c.Close()
+	c.Close() // must not panic or block
+}
+
+// RedisCache.Keys iterates with SCAN; behavior must match the old KEYS
+// implementation: all prefixed keys, stripped, nothing else.
+
+func TestRedisKeys_ScanRespectsPrefix(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	rc := NewRedisCache(client, "pfx:", jsonMarshal, valueUnmarshal, 0, nil)
+
+	require.NoError(t, rc.Set("a", &testEntry{ID: 1}))
+	require.NoError(t, rc.Set("b", &testEntry{ID: 2}))
+	require.NoError(t, server.Set("other:c", "x")) // outside the prefix
+
+	keys, err := rc.Keys()
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"a", "b"}, keys)
 }

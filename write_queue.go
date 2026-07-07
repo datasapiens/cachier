@@ -127,11 +127,23 @@ func (o *queueOperationPurge) IncludesKey(key string) bool {
 	return true
 }
 
+// computeToken fences one in-flight GetOrCompute(Ex) call against
+// invalidations that run without that key's compute lock (DeletePredicate,
+// DeleteWithPrefix, DeleteRegExp, Purge). The invalidated flag is read and
+// written ONLY under the owning writeQueue's mutex: checking it and
+// enqueueing the write happen in one critical section (TrySet), as do
+// marking it and discarding queued writes (Discard/DiscardPredicate), so a
+// stale write can neither slip in after a discard nor dodge the mark.
+type computeToken struct {
+	invalidated bool
+}
+
 type writeQueue[T any] struct {
 	sync.Mutex
 	Queue            deque.Deque[queueOperation] // Queue to hold write cache operations
 	Values           map[string]*T               // Map to hold currently valid values that were not yet written
 	CurrentlyWriting queueOperation              // Queue write operation that is currently being processed
+	tokens           map[string]*computeToken    // Active compute tokens by key (H4 fencing)
 }
 
 // newWriteQueue creates a new CircularQueue with the specified size
@@ -139,6 +151,7 @@ func newWriteQueue[T any]() *writeQueue[T] {
 	return &writeQueue[T]{
 		Values:           make(map[string]*T),
 		CurrentlyWriting: nil,
+		tokens:           make(map[string]*computeToken),
 	}
 }
 
@@ -177,14 +190,89 @@ func (q *writeQueue[T]) Get(key string) (*T, bool) {
 
 // Set adds a new key-value pair to the queue
 func (q *writeQueue[T]) Set(key string, value *T) {
+	q.TrySet(key, value, nil)
+}
+
+// TrySet stores a key-value pair like Set unless the supplied token was
+// invalidated by a concurrent Discard/DiscardPredicate. A nil token is
+// never invalidated. Reports whether the value was stored.
+func (q *writeQueue[T]) TrySet(key string, value *T, token *computeToken) bool {
 	q.Lock()
 	defer q.Unlock()
+
+	if token != nil && token.invalidated {
+		return false
+	}
 
 	op := &queueOperationSet[T]{Key: key, Value: value}
 	q.removeOverridden(op)
 	q.Queue.PushBack(op)
 
 	q.Values[key] = value
+	return true
+}
+
+// RegisterToken creates the active compute token for key. Callers must hold
+// key's compute lock, which guarantees at most one live token per key.
+func (q *writeQueue[T]) RegisterToken(key string) *computeToken {
+	q.Lock()
+	defer q.Unlock()
+
+	token := &computeToken{}
+	q.tokens[key] = token
+	return token
+}
+
+// DeregisterToken removes key's token once its compute has finished. The
+// identity check keeps a stale caller from ever removing a newer compute's
+// token.
+func (q *writeQueue[T]) DeregisterToken(key string, token *computeToken) {
+	q.Lock()
+	defer q.Unlock()
+
+	if q.tokens[key] == token {
+		delete(q.tokens, key)
+	}
+}
+
+// Discard removes any queued Set for key without queueing a delete op (the
+// caller deletes from the engine synchronously) and marks key's in-flight
+// compute token, if any, so its pending write-back is skipped. Callers run
+// under engineMu, so no write cycle is in flight (CurrentlyWriting is nil)
+// while the queue is swept.
+func (q *writeQueue[T]) Discard(key string) {
+	q.discardMatching(func(k string) bool { return k == key })
+}
+
+// DiscardPredicate removes every queued Set whose key matches pred and
+// marks every matching in-flight compute token. Same engineMu caveat as
+// Discard.
+func (q *writeQueue[T]) DiscardPredicate(pred Predicate) {
+	q.discardMatching(pred)
+}
+
+func (q *writeQueue[T]) discardMatching(pred Predicate) {
+	q.Lock()
+	defer q.Unlock()
+
+	i := 0
+	for i < q.Queue.Len() {
+		if op, ok := q.Queue.At(i).(*queueOperationSet[T]); ok && pred(op.Key) {
+			q.Queue.Remove(i)
+		} else {
+			i++
+		}
+	}
+	for key := range q.Values {
+		if pred(key) {
+			delete(q.Values, key)
+		}
+	}
+	for key, token := range q.tokens {
+		if pred(key) {
+			token.invalidated = true
+		}
+	}
 }
 
 // Delete queues a key for deletion
