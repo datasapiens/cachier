@@ -97,7 +97,11 @@ func (rc *RedisCache) Get(key string) (v interface{}, err error) {
 	}
 
 	var result interface{}
-	rc.unmarshal(input, &result)
+	if err := rc.unmarshal(input, &result); err != nil {
+		rc.logger.Error("redis: error unmarshaling data with key: ", key, " error: ", err)
+		rc.Delete(key)
+		return nil, ErrNotFound
+	}
 	return result, nil
 }
 
