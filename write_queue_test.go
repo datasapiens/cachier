@@ -186,29 +186,24 @@ func TestWriteQueue_Count(t *testing.T) {
 	assert.Equal(t, 0, q.Count())
 }
 
-func TestWriteQueue_CountPredicate(t *testing.T) {
+func TestWriteQueue_Unmasked(t *testing.T) {
 	q := newWriteQueue[string]()
 
-	// Add values
-	value1 := "value1"
-	value2 := "value2"
-	value3 := "value3"
-	q.Set("test_key1", &value1)
-	q.Set("test_key2", &value2)
-	q.Set("other_key", &value3)
+	value := "value"
+	q.Set("pending", &value)
+	q.Delete("deleted")
+	q.DeletePredicate(func(key string) bool {
+		return strings.HasPrefix(key, "pref_")
+	})
 
-	// Count keys starting with "test_"
-	predicate := func(key string) bool {
-		return strings.HasPrefix(key, "test_")
-	}
+	// A pending Set stays visible, keys masked by queued delete ops are
+	// dropped, untouched keys pass through.
+	keys := q.Unmasked([]string{"pending", "deleted", "pref_key", "clean"})
+	assert.Equal(t, []string{"pending", "clean"}, keys)
 
-	count := q.CountPredicate(predicate)
-	assert.Equal(t, 2, count)
-
-	// Delete one matching key
-	q.Delete("test_key1")
-	count = q.CountPredicate(predicate)
-	assert.Equal(t, 1, count)
+	// Purge masks everything.
+	q.Purge()
+	assert.Empty(t, q.Unmasked([]string{"pending", "clean"}))
 }
 
 func TestWriteQueue_Keys(t *testing.T) {
@@ -713,9 +708,7 @@ func TestWriteQueue_EmptyQueue_EdgeCases(t *testing.T) {
 	// Operations on empty queue
 	assert.Equal(t, 0, q.Count())
 	assert.Equal(t, 0, len(q.Keys()))
-
-	predicate := func(key string) bool { return true }
-	assert.Equal(t, 0, q.CountPredicate(predicate))
+	assert.Equal(t, []string{"any"}, q.Unmasked([]string{"any"}))
 
 	// Get from empty queue
 	result, found := q.Get("nonexistent")
@@ -759,7 +752,12 @@ func TestWriteQueue_LargeOperations(t *testing.T) {
 		}
 	}
 
-	count := q.CountPredicate(predicate)
+	count := 0
+	for _, key := range q.Keys() {
+		if predicate(key) {
+			count++
+		}
+	}
 	assert.Equal(t, expectedMatches, count)
 
 	// Delete with predicate

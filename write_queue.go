@@ -286,21 +286,6 @@ func (q *writeQueue[T]) Count() int {
 	return len(q.Values)
 }
 
-// CountPredicate counts the number of keys in the queue that satisfy the given predicate
-func (q *writeQueue[T]) CountPredicate(pred Predicate) int {
-	q.Lock()
-	defer q.Unlock()
-
-	count := 0
-	for key := range q.Values {
-		if pred(key) {
-			count++ // Count valid keys that satisfy the predicate
-		}
-	}
-
-	return count // Return the total count
-}
-
 // Purge removes all records from the queue and marks every in-flight
 // compute token
 func (q *writeQueue[T]) Purge() {
@@ -328,6 +313,38 @@ func (q *writeQueue[T]) Keys() []string {
 	}
 
 	return keys // Return the list of all keys
+}
+
+// Unmasked returns the subset of keys currently visible to readers, using
+// the same visibility rule as Get: a key with a pending Set stays visible,
+// while a key masked by a queued Delete/DeletePredicate/Purge operation is
+// treated as deleted before the write loop flushes the operation to the
+// engine. Checking Values first also keeps a concurrently updated engine
+// key from being dropped: a Set op in the queue always has a Values entry
+// (every delete path scrubs both under this mutex).
+func (q *writeQueue[T]) Unmasked(keys []string) []string {
+	q.Lock()
+	defer q.Unlock()
+
+	unmasked := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, pending := q.Values[key]; pending {
+			unmasked = append(unmasked, key)
+			continue
+		}
+		masked := false
+		for it := range q.Queue.Iter() {
+			if it.IncludesKey(key) {
+				masked = true
+				break
+			}
+		}
+		if !masked {
+			unmasked = append(unmasked, key)
+		}
+	}
+
+	return unmasked
 }
 
 // StartWriting removes the oldest key-value pair from the queue

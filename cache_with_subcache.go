@@ -13,8 +13,16 @@ func (cs *CacheWithSubcache[T]) Get(key string) (interface{}, error) {
 	value, err := cs.Subcache.GetOrCompute(key, func() (*T, error) {
 		return cs.Cache.Get(key)
 	})
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	if value == nil {
+		var zero T
+		return zero, ErrNotFound
+	}
 
-	return *value, err
+	return *value, nil
 }
 
 // Peek gets a cached key value without side-effects (i.e. without adding to L1 cache)
