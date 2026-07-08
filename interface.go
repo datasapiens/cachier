@@ -23,7 +23,6 @@ package cachier
 import (
 	"errors"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -276,13 +275,12 @@ func (c *Cache[T]) DeleteRegExp(pattern string) error {
 
 // CountPredicate counts cache keys satisfying the given predicate
 func (c *Cache[T]) CountPredicate(pred Predicate) (int, error) {
-	count := c.writeQueue.CountPredicate(pred)
-
 	keys, err := c.Keys()
 	if err != nil {
 		return 0, err
 	}
 
+	count := 0
 	for _, key := range keys {
 		if pred(key) {
 			count++
@@ -347,11 +345,34 @@ func (c *Cache[T]) Purge() error {
 	return nil
 }
 
-// Keys returns all the keys in cache
+// Keys returns all the keys in cache: keys with a pending write in the
+// queue plus engine keys, matching what Get/Peek would serve — the union
+// is deduplicated (an updated key sits in both sources until the write
+// loop flushes it) and engine keys masked by a queued delete/predicate/
+// purge are excluded. The queue snapshot is taken before the engine one so
+// a key flushed between the two calls still appears (as a deduped engine
+// key) instead of being dropped; the seen set also absorbs the duplicates
+// a redis SCAN may legitimately return.
 func (c *Cache[T]) Keys() ([]string, error) {
-	writeQueueKeys := c.writeQueue.Keys()
+	keys := c.writeQueue.Keys()
 	engineKeys, err := c.engine.Keys()
-	return slices.Concat(writeQueueKeys, engineKeys), err
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{}, len(keys)+len(engineKeys))
+	for _, key := range keys {
+		seen[key] = struct{}{}
+	}
+	for _, key := range c.writeQueue.Unmasked(engineKeys) {
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+
+	return keys, nil
 }
 
 // getNoLock gets a cached value by key

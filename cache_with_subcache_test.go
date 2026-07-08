@@ -23,3 +23,20 @@ func TestCacheWithSubcacheGetMissReturnsError(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 	assert.Equal(t, testEntry{}, value)
 }
+
+// A hit in the primary cache is served and promoted into the L1 subcache.
+func TestCacheWithSubcacheGetHit(t *testing.T) {
+	cs := &CacheWithSubcache[testEntry]{
+		Cache:    newTestCache[testEntry](newFakeEngine()),
+		Subcache: newTestCache[testEntry](newFakeEngine()),
+	}
+	require.NoError(t, cs.Cache.Set("hit", &testEntry{ID: 7, Key: "hit"}))
+
+	value, err := cs.Get("hit")
+	require.NoError(t, err)
+	assert.Equal(t, testEntry{ID: 7, Key: "hit"}, value)
+
+	promoted, err := cs.Subcache.Get("hit")
+	require.NoError(t, err)
+	assert.Equal(t, testEntry{ID: 7, Key: "hit"}, *promoted)
+}

@@ -1,6 +1,7 @@
 package cachier
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -98,5 +99,22 @@ func TestKeysExcludesEverythingAfterPurge(t *testing.T) {
 
 	count, err := c.CountPredicate(func(string) bool { return true })
 	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+}
+
+// An engine listing failure yields no keys at all rather than a partial
+// (queue-only) listing next to a non-nil error.
+func TestKeysPropagatesEngineError(t *testing.T) {
+	engine := newFakeEngine()
+	engine.keysErr = errors.New("scan failed")
+	c := newTestCache[testEntry](engine)
+	require.NoError(t, c.Set("pending", &testEntry{ID: 1}))
+
+	keys, err := c.Keys()
+	assert.ErrorIs(t, err, engine.keysErr)
+	assert.Nil(t, keys)
+
+	count, err := c.CountPredicate(func(string) bool { return true })
+	assert.ErrorIs(t, err, engine.keysErr)
 	assert.Equal(t, 0, count)
 }
