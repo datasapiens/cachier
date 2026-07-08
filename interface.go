@@ -98,13 +98,17 @@ func MakeCache[T any](engine CacheEngine, logger Logger) *Cache[T] {
 	return cache
 }
 
-// Close stops the background write loop, waiting for it to perform one
-// final best-effort drain and exit. Idempotent and safe to call from
-// multiple goroutines. Reads and computes keep working after Close, but
-// writes AND invalidations enqueued after the final drain never reach the
-// engine (they only mask in-process reads), so stop producing both before
-// calling Close. On a Cache built without MakeCache (in-package tests)
-// there is no write loop and Close is a no-op.
+// Close stops the background write loop, waits for it to exit, and then
+// performs one more best-effort drain to catch operations that raced the
+// loop's own final drain. Idempotent and safe to call from multiple
+// goroutines. Reads and computes keep working after Close, but a write or
+// invalidation enqueued after Close never reaches the engine — it only
+// masks in-process reads, and against a persistent engine (redis) that
+// outlives the process the invalidation is permanently lost. Quiesce EVERY
+// producer of writes and invalidations — HTTP handlers, event listeners,
+// background workers — before calling Close. On a Cache built without
+// MakeCache (in-package tests) there is no write loop to stop; Close just
+// performs the drain.
 func (c *Cache[T]) Close() {
 	c.closeOnce.Do(func() {
 		if c.ticker != nil {
@@ -116,6 +120,11 @@ func (c *Cache[T]) Close() {
 	})
 	if c.stopped != nil {
 		<-c.stopped
+	}
+	// The loop goroutine has exited (or never existed), so draining from
+	// here cannot violate StartWriting's single-consumer invariant; engineMu
+	// still serializes cycles against any concurrent Close caller.
+	for c.runOneWriteCycle() {
 	}
 }
 
