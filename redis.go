@@ -169,17 +169,30 @@ func (rc *RedisCache) Keys() ([]string, error) {
 	return keys, nil
 }
 
-// Purge removes all the records from the cache
-func (rc *RedisCache) Purge() error {
-	//FIXME: delete all keys from redis at once
-	keys, err := rc.Keys()
-	if err != nil {
-		return err
-	}
-	for _, key := range keys {
-		if err := rc.Delete(key); err != nil {
+// redisDeleteBatchSize bounds how many keys one UNLINK command carries.
+const redisDeleteBatchSize = 500
+
+// DeleteMany removes the given keys in batched UNLINK commands — one round
+// trip per batch instead of one per key.
+func (rc *RedisCache) DeleteMany(keys []string) error {
+	for start := 0; start < len(keys); start += redisDeleteBatchSize {
+		end := min(start+redisDeleteBatchSize, len(keys))
+		batch := make([]string, 0, end-start)
+		for _, key := range keys[start:end] {
+			batch = append(batch, rc.keyPrefix+key)
+		}
+		if err := rc.redisClient.Unlink(ctx, batch...).Err(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// Purge removes all the records from the cache
+func (rc *RedisCache) Purge() error {
+	keys, err := rc.Keys()
+	if err != nil {
+		return err
+	}
+	return rc.DeleteMany(keys)
 }

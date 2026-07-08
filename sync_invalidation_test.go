@@ -135,25 +135,39 @@ func (l *recordingLogger) countContaining(sub string) int {
 	return count
 }
 
-// M12: invalidations must reach the engine synchronously — before the call
-// returns, not on a later write-loop tick — and must report the engine's
-// real error instead of unconditionally returning nil.
+// M12 (async form, decided 2026-07-08): invalidations never block on the
+// engine — they mask in-process reads immediately via the queued op, the
+// engine-side work happens on the write loop, and a failing engine op is
+// retried head-of-line until it succeeds.
 
-func TestDelete_SynchronouslyRemovesFromEngine(t *testing.T) {
+func TestDelete_MasksReadsImmediatelyAndRemovesOnFlush(t *testing.T) {
 	engine := newFakeEngine()
 	engine.seed("k", &testEntry{ID: 1})
 	c := newTestCache[testEntry](engine)
 
 	require.NoError(t, c.Delete("k"))
-	assert.False(t, engine.has("k"), "Delete must remove the key from the engine before returning, not on a later flush")
+	_, err := c.Get("k")
+	assert.ErrorIs(t, err, ErrNotFound, "reads must see the deletion before the flush")
+	assert.True(t, engine.has("k"), "the engine delete is deferred to the write loop")
+
+	flushWriteQueue(t, c)
+	assert.False(t, engine.has("k"), "the flush must remove the key from the engine")
 }
 
-func TestDelete_ReturnsEngineError(t *testing.T) {
+func TestDelete_FailedEngineDeleteRetriesUntilRecovery(t *testing.T) {
 	engine := newFakeEngine()
+	engine.seed("k", &testEntry{ID: 1})
 	engine.deleteErr = errEngineBoom
 	c := newTestCache[testEntry](engine)
 
-	assert.ErrorIs(t, c.Delete("k"), errEngineBoom)
+	require.NoError(t, c.Delete("k"), "Delete reports nil by design; failures are the write loop's to retry")
+
+	assert.False(t, c.runOneWriteCycle(), "the failing delete stops the drain")
+	assert.True(t, engine.has("k"))
+
+	engine.deleteErr = nil
+	assert.True(t, c.runOneWriteCycle(), "the op stays at the front and succeeds once the engine recovers")
+	assert.False(t, engine.has("k"))
 }
 
 func TestDelete_DiscardsPendingSet(t *testing.T) {
@@ -169,7 +183,7 @@ func TestDelete_DiscardsPendingSet(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
-func TestDeletePredicate_SynchronouslyRemovesMatchingEngineKeys(t *testing.T) {
+func TestDeletePredicate_MasksReadsImmediatelyAndRemovesOnFlush(t *testing.T) {
 	engine := newFakeEngine()
 	engine.seed("a:1", &testEntry{ID: 1})
 	engine.seed("a:2", &testEntry{ID: 2})
@@ -177,45 +191,50 @@ func TestDeletePredicate_SynchronouslyRemovesMatchingEngineKeys(t *testing.T) {
 	c := newTestCache[testEntry](engine)
 
 	require.NoError(t, c.DeleteWithPrefix("a:"))
-	assert.False(t, engine.has("a:1"), "matching keys must be gone from the engine when the call returns")
-	assert.False(t, engine.has("a:2"), "matching keys must be gone from the engine when the call returns")
+	_, err := c.Get("a:1")
+	assert.ErrorIs(t, err, ErrNotFound, "reads must see the predicate deletion before the flush")
+	got, err := c.Get("b:1")
+	require.NoError(t, err, "non-matching keys must stay readable")
+	assert.Equal(t, testEntry{ID: 3}, *got)
+	assert.True(t, engine.has("a:1"), "the engine delete is deferred to the write loop")
+
+	flushWriteQueue(t, c)
+	assert.False(t, engine.has("a:1"), "matching keys must be gone after the flush")
+	assert.False(t, engine.has("a:2"), "matching keys must be gone after the flush")
 	assert.True(t, engine.has("b:1"), "non-matching keys must survive")
 }
 
-func TestDeletePredicate_ReturnsEngineKeysError(t *testing.T) {
+func TestDeletePredicate_EngineFailureRetriesUntilRecovery(t *testing.T) {
 	engine := newFakeEngine()
+	engine.seed("k", &testEntry{ID: 1})
 	engine.keysErr = errEngineBoom
 	c := newTestCache[testEntry](engine)
 
-	assert.ErrorIs(t, c.DeletePredicate(func(string) bool { return true }), errEngineBoom)
+	require.NoError(t, c.DeletePredicate(func(string) bool { return true }), "DeletePredicate reports nil by design")
+
+	assert.False(t, c.runOneWriteCycle(), "the failing enumeration stops the drain")
+	assert.False(t, c.runOneWriteCycle(), "the op stays at the front while the engine is down")
+	assert.True(t, engine.has("k"))
+
+	engine.keysErr = nil
+	assert.True(t, c.runOneWriteCycle(), "the retry succeeds once the engine recovers")
+	assert.False(t, engine.has("k"))
 }
 
-func TestDeletePredicate_ReturnsEngineDeleteError(t *testing.T) {
-	engine := newFakeEngine()
-	engine.seed("k", &testEntry{ID: 1})
-	engine.deleteErr = errEngineBoom
-	c := newTestCache[testEntry](engine)
-
-	assert.ErrorIs(t, c.DeletePredicate(func(string) bool { return true }), errEngineBoom)
-}
-
-func TestPurge_SynchronouslyClearsEngine(t *testing.T) {
+func TestPurge_MasksReadsImmediatelyAndClearsOnFlush(t *testing.T) {
 	engine := newFakeEngine()
 	engine.seed("k1", &testEntry{ID: 1})
 	engine.seed("k2", &testEntry{ID: 2})
 	c := newTestCache[testEntry](engine)
 
 	require.NoError(t, c.Purge())
-	assert.False(t, engine.has("k1"), "Purge must clear the engine before returning")
-	assert.False(t, engine.has("k2"), "Purge must clear the engine before returning")
-}
+	_, err := c.Get("k1")
+	assert.ErrorIs(t, err, ErrNotFound, "reads must see the purge before the flush")
+	assert.True(t, engine.has("k1"), "the engine purge is deferred to the write loop")
 
-func TestPurge_ReturnsEngineError(t *testing.T) {
-	engine := newFakeEngine()
-	engine.purgeErr = errEngineBoom
-	c := newTestCache[testEntry](engine)
-
-	assert.ErrorIs(t, c.Purge(), errEngineBoom)
+	flushWriteQueue(t, c)
+	assert.False(t, engine.has("k1"), "the engine must be cleared after the flush")
+	assert.False(t, engine.has("k2"), "the engine must be cleared after the flush")
 }
 
 func TestPurge_DiscardsPendingSets(t *testing.T) {
@@ -231,11 +250,11 @@ func TestPurge_DiscardsPendingSets(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
-// M12 ordering: a synchronous invalidation must not interleave with an
-// in-flight write-loop engine op — it lands strictly after, so the key is
-// absent once both complete.
+// Ordering: an invalidation issued while an engine write is in flight must
+// not block the caller, and FIFO puts its queued op behind the in-flight
+// Set — so once both flush, the key is absent.
 
-func TestDeletePredicate_WaitsForInFlightEngineWrite(t *testing.T) {
+func TestDeletePredicate_DoesNotBlockOnInFlightEngineWrite(t *testing.T) {
 	engine := newFakeEngine()
 	setStarted := make(chan struct{})
 	setRelease := make(chan struct{})
@@ -256,14 +275,15 @@ func TestDeletePredicate_WaitsForInFlightEngineWrite(t *testing.T) {
 	go func() { done <- c.DeletePredicate(func(string) bool { return true }) }()
 
 	select {
-	case <-done:
-		t.Fatal("DeletePredicate returned while an engine write for a matching key was still in flight")
-	case <-time.After(100 * time.Millisecond):
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("DeletePredicate must not block on an in-flight engine write")
 	}
 
 	release()
-	require.NoError(t, <-done)
-	assert.False(t, engine.has("k"), "the predicate delete must land after the in-flight write, leaving the key absent")
+	assert.Eventually(t, func() bool { return !engine.has("k") }, 5*time.Second, 50*time.Millisecond,
+		"the queued predicate delete lands after the in-flight write, leaving the key absent")
 }
 
 // M10: a queued purge that keeps failing must be attempted once per tick —
@@ -277,9 +297,7 @@ func TestWriteLoop_FailingPurgeYieldsToNextTick(t *testing.T) {
 	c := MakeCache[testEntry](engine, logger)
 	t.Cleanup(c.Close)
 
-	// Seed the queue directly: after M12, Cache.Purge is synchronous and
-	// never enqueues, but the write loop must still handle a queued purge.
-	c.writeQueue.Purge()
+	require.NoError(t, c.Purge())
 
 	time.Sleep(2500 * time.Millisecond)
 
@@ -301,7 +319,7 @@ func TestRunOneWriteCycle_FailingOpStopsDrain(t *testing.T) {
 	c := newTestCache[testEntry](engine)
 	c.logger = logger
 
-	c.writeQueue.Purge()
+	require.NoError(t, c.Purge())
 
 	assert.False(t, c.runOneWriteCycle(), "a failing op must stop the drain")
 	assert.Equal(t, int32(1), engine.purgeCalls.Load(), "exactly one attempt per cycle")
@@ -310,8 +328,9 @@ func TestRunOneWriteCycle_FailingOpStopsDrain(t *testing.T) {
 	assert.Equal(t, 2, logger.countContaining("write loop error"), "every failed attempt must be logged")
 }
 
-// Close: stops the write loop after one final drain, idempotent, and the
-// synchronous invalidations keep working afterwards.
+// Close: stops the write loop after one final drain, idempotent. Writes
+// and invalidations enqueued after Close never reach the engine (they only
+// mask in-process reads) — the documented contract.
 
 func TestClose_StopsWriteLoopAndDrains(t *testing.T) {
 	engine := newFakeEngine()
@@ -322,7 +341,9 @@ func TestClose_StopsWriteLoopAndDrains(t *testing.T) {
 	assert.True(t, engine.has("k"), "Close must drain queued writes before stopping")
 
 	require.NoError(t, c.Delete("k"))
-	assert.False(t, engine.has("k"), "synchronous invalidations must keep working after Close")
+	_, err := c.Get("k")
+	assert.ErrorIs(t, err, ErrNotFound, "a post-Close invalidation still masks in-process reads")
+	assert.True(t, engine.has("k"), "a post-Close invalidation never reaches the engine — stop invalidating before Close")
 
 	require.NoError(t, c.Set("later", &testEntry{ID: 2}))
 	time.Sleep(1200 * time.Millisecond)
@@ -350,4 +371,61 @@ func TestRedisKeys_ScanRespectsPrefix(t *testing.T) {
 	keys, err := rc.Keys()
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"a", "b"}, keys)
+}
+
+// bulkFakeEngine is fakeEngine plus a recording BulkDeleter fast path.
+type bulkFakeEngine struct {
+	*fakeEngine
+	manyMu    sync.Mutex
+	manyCalls [][]string
+}
+
+func (b *bulkFakeEngine) DeleteMany(keys []string) error {
+	b.manyMu.Lock()
+	b.manyCalls = append(b.manyCalls, append([]string(nil), keys...))
+	b.manyMu.Unlock()
+	for _, key := range keys {
+		if err := b.fakeEngine.Delete(key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestPredicateFlushUsesBulkDeleter(t *testing.T) {
+	engine := &bulkFakeEngine{fakeEngine: newFakeEngine()}
+	engine.seed("a:1", &testEntry{ID: 1})
+	engine.seed("a:2", &testEntry{ID: 2})
+	engine.seed("b:1", &testEntry{ID: 3})
+	c := newTestCache[testEntry](engine)
+
+	require.NoError(t, c.DeleteWithPrefix("a:"))
+	flushWriteQueue(t, c)
+
+	require.Len(t, engine.manyCalls, 1, "the flush must use the engine's bulk fast path, not per-key deletes")
+	assert.ElementsMatch(t, []string{"a:1", "a:2"}, engine.manyCalls[0])
+	assert.False(t, engine.has("a:1"))
+	assert.True(t, engine.has("b:1"))
+}
+
+// RedisCache.Purge and DeleteMany remove keys in batched UNLINKs (one round
+// trip per redisDeleteBatchSize keys) instead of one DEL per key.
+
+func TestRedisPurge_BatchedUnlinkClearsLargeKeyspace(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	rc := NewRedisCache(client, "pfx:", jsonMarshal, valueUnmarshal, 0, nil)
+
+	const n = 1100 // spans multiple UNLINK batches
+	for i := 0; i < n; i++ {
+		require.NoError(t, rc.Set(fmt.Sprintf("k%d", i), &testEntry{ID: i}))
+	}
+	require.NoError(t, server.Set("other:c", "x")) // outside the prefix
+
+	require.NoError(t, rc.Purge())
+
+	keys, err := rc.Keys()
+	require.NoError(t, err)
+	assert.Empty(t, keys, "all prefixed keys must be gone")
+	assert.True(t, server.Exists("other:c"), "keys outside the prefix must survive")
 }

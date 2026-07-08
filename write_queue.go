@@ -131,9 +131,11 @@ func (o *queueOperationPurge) IncludesKey(key string) bool {
 // invalidations that run without that key's compute lock (DeletePredicate,
 // DeleteWithPrefix, DeleteRegExp, Purge). The invalidated flag is read and
 // written ONLY under the owning writeQueue's mutex: checking it and
-// enqueueing the write happen in one critical section (TrySet), as do
-// marking it and discarding queued writes (Discard/DiscardPredicate), so a
-// stale write can neither slip in after a discard nor dodge the mark.
+// enqueueing the write happen in one critical section (TrySet), as does
+// marking it while the invalidation op is enqueued (Delete/DeletePredicate/
+// Purge), so a fenced compute's write can neither be enqueued after the
+// invalidation nor dodge the mark; writes already queued are handled by
+// removeOverridden and FIFO ordering behind the invalidation op.
 type computeToken struct {
 	invalidated bool
 }
@@ -238,47 +240,8 @@ func (q *writeQueue[T]) DeregisterToken(key string, token *computeToken) {
 	}
 }
 
-// Discard removes any queued Set for key without queueing a delete op (the
-// caller deletes from the engine synchronously) and marks key's in-flight
-// compute token, if any, so its pending write-back is skipped. Callers run
-// under engineMu, so no write cycle is in flight (CurrentlyWriting is nil)
-// while the queue is swept.
-func (q *writeQueue[T]) Discard(key string) {
-	q.discardMatching(func(k string) bool { return k == key })
-}
-
-// DiscardPredicate removes every queued Set whose key matches pred and
-// marks every matching in-flight compute token. Same engineMu caveat as
-// Discard.
-func (q *writeQueue[T]) DiscardPredicate(pred Predicate) {
-	q.discardMatching(pred)
-}
-
-func (q *writeQueue[T]) discardMatching(pred Predicate) {
-	q.Lock()
-	defer q.Unlock()
-
-	i := 0
-	for i < q.Queue.Len() {
-		if op, ok := q.Queue.At(i).(*queueOperationSet[T]); ok && pred(op.Key) {
-			q.Queue.Remove(i)
-		} else {
-			i++
-		}
-	}
-	for key := range q.Values {
-		if pred(key) {
-			delete(q.Values, key)
-		}
-	}
-	for key, token := range q.tokens {
-		if pred(key) {
-			token.invalidated = true
-		}
-	}
-}
-
-// Delete queues a key for deletion
+// Delete queues a key for deletion and marks the key's in-flight compute
+// token, if any, so its pending write-back is skipped
 func (q *writeQueue[T]) Delete(key string) {
 	q.Lock()
 	defer q.Unlock()
@@ -288,9 +251,13 @@ func (q *writeQueue[T]) Delete(key string) {
 	q.Queue.PushBack(op)
 
 	delete(q.Values, key)
+	if token, ok := q.tokens[key]; ok {
+		token.invalidated = true
+	}
 }
 
-// DeletePredicate queues a deletion of all keys matching the supplied predicate
+// DeletePredicate queues a deletion of all keys matching the supplied
+// predicate and marks every matching in-flight compute token
 func (q *writeQueue[T]) DeletePredicate(pred Predicate) {
 	q.Lock()
 	defer q.Unlock()
@@ -302,6 +269,11 @@ func (q *writeQueue[T]) DeletePredicate(pred Predicate) {
 	for key := range q.Values {
 		if pred(key) {
 			delete(q.Values, key)
+		}
+	}
+	for key, token := range q.tokens {
+		if pred(key) {
+			token.invalidated = true
 		}
 	}
 }
@@ -329,7 +301,8 @@ func (q *writeQueue[T]) CountPredicate(pred Predicate) int {
 	return count // Return the total count
 }
 
-// Purge removes all records from the queue
+// Purge removes all records from the queue and marks every in-flight
+// compute token
 func (q *writeQueue[T]) Purge() {
 	q.Lock()
 	defer q.Unlock()
@@ -339,6 +312,9 @@ func (q *writeQueue[T]) Purge() {
 	q.Queue.PushBack(op)
 
 	q.Values = make(map[string]*T) // Reset the values map
+	for _, token := range q.tokens {
+		token.invalidated = true
+	}
 }
 
 // Keys returns all the keys in the queue
