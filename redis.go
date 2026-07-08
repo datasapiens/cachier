@@ -150,32 +150,49 @@ func (rc *RedisCache) Delete(key string) error {
 	return rc.redisClient.Del(ctx, rc.keyPrefix+key).Err()
 }
 
-// Keys returns all the keys in the cache
+// redisScanCount is the COUNT hint for SCAN iterations.
+const redisScanCount = 1000
+
+// Keys returns all the keys in the cache. It iterates with SCAN instead of
+// KEYS so a large keyspace does not block the redis server for the whole
+// enumeration.
 func (rc *RedisCache) Keys() ([]string, error) {
-	keys, err := rc.redisClient.Keys(ctx, rc.keyPrefix+"*").Result()
-	if err != nil {
+	keys := make([]string, 0)
+	iter := rc.redisClient.Scan(ctx, 0, rc.keyPrefix+"*", redisScanCount).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, strings.TrimPrefix(iter.Val(), rc.keyPrefix))
+	}
+	if err := iter.Err(); err != nil {
 		return nil, err
 	}
 
-	strippedKeys := make([]string, 0, len(keys))
-	for _, key := range keys {
-		strippedKeys = append(strippedKeys, strings.TrimPrefix(key, rc.keyPrefix))
-	}
-
-	return strippedKeys, nil
+	return keys, nil
 }
 
-// Purge removes all the records from the cache
-func (rc *RedisCache) Purge() error {
-	//FIXME: delete all keys from redis at once
-	keys, err := rc.Keys()
-	if err != nil {
-		return err
-	}
-	for _, key := range keys {
-		if err := rc.Delete(key); err != nil {
+// redisDeleteBatchSize bounds how many keys one UNLINK command carries.
+const redisDeleteBatchSize = 500
+
+// DeleteMany removes the given keys in batched UNLINK commands — one round
+// trip per batch instead of one per key.
+func (rc *RedisCache) DeleteMany(keys []string) error {
+	for start := 0; start < len(keys); start += redisDeleteBatchSize {
+		end := min(start+redisDeleteBatchSize, len(keys))
+		batch := make([]string, 0, end-start)
+		for _, key := range keys[start:end] {
+			batch = append(batch, rc.keyPrefix+key)
+		}
+		if err := rc.redisClient.Unlink(ctx, batch...).Err(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// Purge removes all the records from the cache
+func (rc *RedisCache) Purge() error {
+	keys, err := rc.Keys()
+	if err != nil {
+		return err
+	}
+	return rc.DeleteMany(keys)
 }

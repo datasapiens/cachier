@@ -30,7 +30,10 @@ func newTestCache[T any](engine CacheEngine) *Cache[T] {
 }
 
 // flushWriteQueue synchronously drains all pending operations into the
-// engine, replicating one writeLoop pass.
+// engine, replicating one writeLoop pass. Its dispatch switch mirrors
+// Cache.runOneWriteCycle and must be updated in lockstep — it stays
+// separate because its failure contract differs (any engine error fails
+// the test loudly instead of yielding to the next tick).
 func flushWriteQueue[T any](t *testing.T, c *Cache[T]) {
 	t.Helper()
 	for {
@@ -48,13 +51,13 @@ func flushWriteQueue[T any](t *testing.T, c *Cache[T]) {
 			var keys []string
 			keys, err = c.engine.Keys()
 			if err == nil {
+				matching := make([]string, 0, len(keys))
 				for _, key := range keys {
 					if op.Predicate(key) {
-						if err = c.engine.Delete(key); err != nil {
-							break
-						}
+						matching = append(matching, key)
 					}
 				}
+				err = c.deleteKeys(matching)
 			}
 		case *queueOperationPurge:
 			err = c.engine.Purge()
